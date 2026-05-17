@@ -193,6 +193,13 @@ static STARTUP_TIME: OnceLock<Instant> = OnceLock::new();
 fn main() {
     STARTUP_TIME.get_or_init(|| Instant::now());
 
+    // Ignore SIGPIPE so that a dropped connection to a local LLM server
+    // (e.g. rapid-mlx killed mid-stream) does not terminate the process.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+    }
+
     #[cfg(unix)]
     util::prevent_root_execution();
 
