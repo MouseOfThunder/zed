@@ -613,11 +613,19 @@ impl LmStudioEventMapper {
         }
 
         match choice.finish_reason.as_deref() {
-            Some("stop") => {
-                events.push(Ok(LanguageModelCompletionEvent::Stop(StopReason::EndTurn)));
-            }
-            Some("tool_calls") => {
+            Some("stop") if !self.tool_calls_by_index.is_empty() => {
+                // Some models (Qwen via rapid_mlx) send finish_reason:"stop"
+                // instead of "tool_calls". Treat it as "tool_calls".
+                log::warn!(
+                    "LMStudio: finish_reason=\"stop\" with {} pending tool call(s); \
+                     treating as \"tool_calls\"",
+                    self.tool_calls_by_index.len()
+                );
                 events.extend(self.tool_calls_by_index.drain().map(|(_, tool_call)| {
+                    log::debug!(
+                        "LMStudio tool call (from stop): name={} id={} args={}",
+                        tool_call.name, tool_call.id, tool_call.arguments
+                    );
                     match parse_tool_arguments(&tool_call.arguments) {
                         Ok(input) => Ok(LanguageModelCompletionEvent::ToolUse(
                             LanguageModelToolUse {
@@ -629,18 +637,67 @@ impl LmStudioEventMapper {
                                 thought_signature: None,
                             },
                         )),
-                        Err(error) => Ok(LanguageModelCompletionEvent::ToolUseJsonParseError {
-                            id: tool_call.id.into(),
-                            tool_name: tool_call.name.into(),
-                            raw_input: tool_call.arguments.into(),
-                            json_parse_error: error.to_string(),
-                        }),
+                        Err(error) => {
+                            log::warn!(
+                                "LMStudio tool call JSON parse error: name={} id={} error={} args={}",
+                                tool_call.name, tool_call.id, error, tool_call.arguments
+                            );
+                            Ok(LanguageModelCompletionEvent::ToolUseJsonParseError {
+                                id: tool_call.id.into(),
+                                tool_name: tool_call.name.into(),
+                                raw_input: tool_call.arguments.into(),
+                                json_parse_error: error.to_string(),
+                            })
+                        }
+                    }
+                }));
+                events.push(Ok(LanguageModelCompletionEvent::Stop(StopReason::ToolUse)));
+            }
+            Some("stop") => {
+                events.push(Ok(LanguageModelCompletionEvent::Stop(StopReason::EndTurn)));
+            }
+            Some("tool_calls") => {
+                events.extend(self.tool_calls_by_index.drain().map(|(_, tool_call)| {
+                    log::debug!(
+                        "LMStudio tool call complete: name={} id={} args={}",
+                        tool_call.name, tool_call.id, tool_call.arguments
+                    );
+                    match parse_tool_arguments(&tool_call.arguments) {
+                        Ok(input) => Ok(LanguageModelCompletionEvent::ToolUse(
+                            LanguageModelToolUse {
+                                id: tool_call.id.into(),
+                                name: tool_call.name.into(),
+                                is_input_complete: true,
+                                input,
+                                raw_input: tool_call.arguments,
+                                thought_signature: None,
+                            },
+                        )),
+                        Err(error) => {
+                            log::warn!(
+                                "LMStudio tool call JSON parse error: name={} id={} error={} args={}",
+                                tool_call.name, tool_call.id, error, tool_call.arguments
+                            );
+                            Ok(LanguageModelCompletionEvent::ToolUseJsonParseError {
+                                id: tool_call.id.into(),
+                                tool_name: tool_call.name.into(),
+                                raw_input: tool_call.arguments.into(),
+                                json_parse_error: error.to_string(),
+                            })
+                        }
                     }
                 }));
 
                 events.push(Ok(LanguageModelCompletionEvent::Stop(StopReason::ToolUse)));
             }
             Some(stop_reason) => {
+                if !self.tool_calls_by_index.is_empty() {
+                    log::warn!(
+                        "LMStudio stream ended with unexpected finish_reason={stop_reason:?} but \
+                         {} pending tool call(s) were never flushed",
+                        self.tool_calls_by_index.len()
+                    );
+                }
                 log::error!("Unexpected LMStudio stop_reason: {stop_reason:?}",);
                 events.push(Ok(LanguageModelCompletionEvent::Stop(StopReason::EndTurn)));
             }

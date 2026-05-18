@@ -476,19 +476,31 @@ impl OpenAiEventMapper {
                     }
 
                     if !entry.id.is_empty() && !entry.name.is_empty() {
-                        if let Ok(input) = serde_json::from_str::<serde_json::Value>(
-                            &fix_streamed_json(&entry.arguments),
-                        ) {
-                            events.push(Ok(LanguageModelCompletionEvent::ToolUse(
-                                LanguageModelToolUse {
-                                    id: entry.id.clone().into(),
-                                    name: entry.name.as_str().into(),
-                                    is_input_complete: false,
-                                    input,
-                                    raw_input: entry.arguments.clone(),
-                                    thought_signature: None,
-                                },
-                            )));
+                        let fixed = fix_streamed_json(&entry.arguments);
+                        match serde_json::from_str::<serde_json::Value>(&fixed) {
+                            Ok(input) => {
+                                log::trace!(
+                                    "OpenAI partial tool call: name={} id={} args_so_far={}",
+                                    entry.name, entry.id, entry.arguments
+                                );
+                                events.push(Ok(LanguageModelCompletionEvent::ToolUse(
+                                    LanguageModelToolUse {
+                                        id: entry.id.clone().into(),
+                                        name: entry.name.as_str().into(),
+                                        is_input_complete: false,
+                                        input,
+                                        raw_input: entry.arguments.clone(),
+                                        thought_signature: None,
+                                    },
+                                )));
+                            }
+                            Err(parse_err) => {
+                                log::trace!(
+                                    "OpenAI partial tool call JSON not yet valid \
+                                     (name={} id={} partial_args={} err={})",
+                                    entry.name, entry.id, entry.arguments, parse_err
+                                );
+                            }
                         }
                     }
                 }
@@ -496,11 +508,21 @@ impl OpenAiEventMapper {
         }
 
         match choice.finish_reason.as_deref() {
-            Some("stop") => {
-                events.push(Ok(LanguageModelCompletionEvent::Stop(StopReason::EndTurn)));
-            }
-            Some("tool_calls") => {
+            Some("stop") if !self.tool_calls_by_index.is_empty() => {
+                // Qwen and some other local models (e.g. via rapid_mlx) send
+                // finish_reason:"stop" instead of "tool_calls" when tool calls
+                // are present. Treat it as "tool_calls" to avoid silently
+                // dropping the accumulated tool calls.
+                log::warn!(
+                    "OpenAI: finish_reason=\"stop\" with {} pending tool call(s); \
+                     treating as \"tool_calls\"",
+                    self.tool_calls_by_index.len()
+                );
                 events.extend(self.tool_calls_by_index.drain().map(|(_, tool_call)| {
+                    log::debug!(
+                        "OpenAI tool call (from stop): name={} id={} args={}",
+                        tool_call.name, tool_call.id, tool_call.arguments
+                    );
                     match parse_tool_arguments(&tool_call.arguments) {
                         Ok(input) => Ok(LanguageModelCompletionEvent::ToolUse(
                             LanguageModelToolUse {
@@ -512,18 +534,67 @@ impl OpenAiEventMapper {
                                 thought_signature: None,
                             },
                         )),
-                        Err(error) => Ok(LanguageModelCompletionEvent::ToolUseJsonParseError {
-                            id: tool_call.id.into(),
-                            tool_name: tool_call.name.into(),
-                            raw_input: tool_call.arguments.clone().into(),
-                            json_parse_error: error.to_string(),
-                        }),
+                        Err(error) => {
+                            log::warn!(
+                                "OpenAI tool call JSON parse error: name={} id={} error={} args={}",
+                                tool_call.name, tool_call.id, error, tool_call.arguments
+                            );
+                            Ok(LanguageModelCompletionEvent::ToolUseJsonParseError {
+                                id: tool_call.id.into(),
+                                tool_name: tool_call.name.into(),
+                                raw_input: tool_call.arguments.clone().into(),
+                                json_parse_error: error.to_string(),
+                            })
+                        }
+                    }
+                }));
+                events.push(Ok(LanguageModelCompletionEvent::Stop(StopReason::ToolUse)));
+            }
+            Some("stop") => {
+                events.push(Ok(LanguageModelCompletionEvent::Stop(StopReason::EndTurn)));
+            }
+            Some("tool_calls") => {
+                events.extend(self.tool_calls_by_index.drain().map(|(_, tool_call)| {
+                    log::debug!(
+                        "OpenAI tool call complete: name={} id={} args={}",
+                        tool_call.name, tool_call.id, tool_call.arguments
+                    );
+                    match parse_tool_arguments(&tool_call.arguments) {
+                        Ok(input) => Ok(LanguageModelCompletionEvent::ToolUse(
+                            LanguageModelToolUse {
+                                id: tool_call.id.clone().into(),
+                                name: tool_call.name.as_str().into(),
+                                is_input_complete: true,
+                                input,
+                                raw_input: tool_call.arguments.clone(),
+                                thought_signature: None,
+                            },
+                        )),
+                        Err(error) => {
+                            log::warn!(
+                                "OpenAI tool call JSON parse error: name={} id={} error={} args={}",
+                                tool_call.name, tool_call.id, error, tool_call.arguments
+                            );
+                            Ok(LanguageModelCompletionEvent::ToolUseJsonParseError {
+                                id: tool_call.id.into(),
+                                tool_name: tool_call.name.into(),
+                                raw_input: tool_call.arguments.clone().into(),
+                                json_parse_error: error.to_string(),
+                            })
+                        }
                     }
                 }));
 
                 events.push(Ok(LanguageModelCompletionEvent::Stop(StopReason::ToolUse)));
             }
             Some(stop_reason) => {
+                if !self.tool_calls_by_index.is_empty() {
+                    log::warn!(
+                        "OpenAI stream ended with unexpected finish_reason={stop_reason:?} but \
+                         {} pending tool call(s) were never flushed",
+                        self.tool_calls_by_index.len()
+                    );
+                }
                 log::error!("Unexpected OpenAI stop_reason: {stop_reason:?}",);
                 events.push(Ok(LanguageModelCompletionEvent::Stop(StopReason::EndTurn)));
             }
