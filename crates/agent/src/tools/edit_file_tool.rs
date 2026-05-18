@@ -54,8 +54,7 @@ pub struct EditFileToolInput {
 
 #[derive(Clone, Default, Debug, Deserialize)]
 struct EditFileToolPartialInput {
-    #[serde(default)]
-    path: Option<String>,
+    path: String,
     #[serde(default, deserialize_with = "deserialize_maybe_stringified")]
     edits: Option<Vec<PartialEdit>>,
 }
@@ -107,42 +106,50 @@ impl EditFileTool {
                     match payload {
                         Ok(payload) => match payload {
                             ToolInputPayload::Partial(partial) => {
-                                if let Ok(parsed) = serde_json::from_value::<EditFileToolPartialInput>(partial) {
-                                    let path_complete = parsed.path.is_some()
-                                        && parsed.path.as_ref() == last_path.as_ref();
+                                match serde_json::from_value::<EditFileToolPartialInput>(partial.clone()) {
+                                    Ok(parsed) => {
+                                        let path_complete = Some(&parsed.path) == last_path.as_ref();
 
-                                    last_path = parsed.path.clone();
+                                        last_path = Some(parsed.path.clone());
 
-                                    if session.is_none()
-                                        && path_complete
-                                        && let Some(path) = parsed.path.as_ref()
-                                    {
-                                        match EditSession::new(
-                                            PathBuf::from(path),
-                                            EditSessionMode::Edit,
-                                            Self::NAME,
-                                            self.session_context.clone(),
-                                            event_stream,
-                                            cx,
-                                        )
-                                        .await
+                                        if session.is_none()
+                                            && path_complete
+                                            && let path = &parsed.path
                                         {
-                                            Ok(created_session) => session = Some(created_session),
-                                            Err(error) => {
-                                                log::error!("Failed to create edit session: {}", error);
-                                                return EditSessionResult::Failed {
-                                                    error,
-                                                    session: None,
-                                                };
+                                            match EditSession::new(
+                                                PathBuf::from(path),
+                                                EditSessionMode::Edit,
+                                                Self::NAME,
+                                                self.session_context.clone(),
+                                                event_stream,
+                                                cx,
+                                            )
+                                            .await
+                                            {
+                                                Ok(created_session) => session = Some(created_session),
+                                                Err(error) => {
+                                                    log::warn!("edit_file: EditSession::new failed (partial): {}", error);
+                                                    return EditSessionResult::Failed {
+                                                        error,
+                                                        session: None,
+                                                    };
+                                                }
                                             }
                                         }
-                                    }
 
-                                    if let Some(current_session) = &mut session
-                                        && let Err(error) = current_session.process_edit(parsed.edits.as_deref(), event_stream, cx)
-                                    {
-                                        log::error!("Failed to process edit: {}", error);
-                                        return EditSessionResult::Failed { error, session };
+                                        if let Some(current_session) = &mut session
+                                            && let Err(error) = current_session.process_edit(parsed.edits.as_deref(), event_stream, cx)
+                                        {
+                                            log::warn!("edit_file: process_edit failed: {}", error);
+                                            return EditSessionResult::Failed { error, session };
+                                        }
+                                    }
+                                    Err(parse_err) => {
+                                        log::debug!(
+                                            "edit_file: partial input not yet parseable: {} (raw={})",
+                                            parse_err,
+                                            partial
+                                        );
                                     }
                                 }
                             }
@@ -162,7 +169,7 @@ impl EditFileTool {
                                     {
                                         Ok(created_session) => created_session,
                                         Err(error) => {
-                                            log::error!("Failed to create edit session: {}", error);
+                                            log::warn!("edit_file: EditSession::new failed (full): path={:?} error={}", full_input.path, error);
                                             return EditSessionResult::Failed {
                                                 error,
                                                 session: None,
@@ -171,10 +178,11 @@ impl EditFileTool {
                                     }
                                 };
 
+                                log::info!("edit_file: finalize_edit path={:?} edits={}", full_input.path, full_input.edits.len());
                                 return match session.finalize_edit(full_input.edits, event_stream, cx).await {
                                     Ok(()) => EditSessionResult::Completed(session),
                                     Err(error) => {
-                                        log::error!("Failed to finalize edit: {}", error);
+                                        log::warn!("edit_file: finalize_edit failed: error={}", error);
                                         EditSessionResult::Failed {
                                             error,
                                             session: Some(session),
@@ -183,7 +191,7 @@ impl EditFileTool {
                                 };
                             }
                             ToolInputPayload::InvalidJson { error_message } => {
-                                log::error!("Received invalid JSON: {error_message}");
+                                log::warn!("edit_file: received InvalidJson: {error_message}");
                                 return EditSessionResult::Failed {
                                     error: error_message,
                                     session,
@@ -191,6 +199,7 @@ impl EditFileTool {
                             }
                         },
                         Err(error) => {
+                            log::warn!("edit_file: input.next() returned Err: {error}");
                             return EditSessionResult::Failed {
                                 error: error.to_string(),
                                 session,
@@ -236,7 +245,7 @@ impl AgentTool for EditFileTool {
             Err(raw_input) => initial_title_from_partial_path::<EditFileToolPartialInput>(
                 &self.session_context,
                 raw_input,
-                |partial| partial.path.clone(),
+                |partial| Some(partial.path.clone()),
                 DEFAULT_UI_TEXT,
                 cx,
             ),

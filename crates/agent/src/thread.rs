@@ -2459,13 +2459,13 @@ impl Thread {
                     cx,
                 ));
             } else {
-                // The tool does not support streaming input.  The model sent a
-                // partial (is_input_complete=false) event for a non-streaming
-                // tool – this happens when a provider uses finish_reason:"stop"
-                // instead of "tool_calls" so the complete event never arrives.
-                log::warn!(
-                    "Dropping partial tool-use event for non-streaming tool {} (id={}) – \
-                     provider may have sent finish_reason:\"stop\" instead of \"tool_calls\"",
+                // Non-streaming tools accumulate their full input in the
+                // completion layer (tool_calls_by_index). Intermediate
+                // is_input_complete=false chunks are ignored here; the
+                // complete event (is_input_complete=true) will arrive once
+                // the tool call JSON is fully assembled.
+                log::trace!(
+                    "Ignoring partial chunk for non-streaming tool {} (id={})",
                     tool_use.name, tool_use.id
                 );
                 return None;
