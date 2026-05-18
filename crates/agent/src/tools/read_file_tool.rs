@@ -8,13 +8,40 @@ use language::Point;
 use language_model::{LanguageModelImage, LanguageModelImageExt, LanguageModelToolResultContent};
 use project::{AgentLocation, ImageItem, Project, WorktreeSettings, image_store};
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use settings::Settings;
 use std::sync::Arc;
 use util::markdown::MarkdownCodeBlock;
 
 fn tool_content_err(e: impl std::fmt::Display) -> LanguageModelToolResultContent {
     LanguageModelToolResultContent::from(e.to_string())
+}
+
+/// Deserializes a line number that may be sent as either a JSON number or a JSON string.
+/// LLMs sometimes send `"1"` instead of `1` for numeric fields.
+fn deserialize_option_line_number<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Error;
+    use serde_json::Value;
+    match Option::<Value>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(Value::Null) => Ok(None),
+        Some(Value::Number(n)) => n
+            .as_u64()
+            .and_then(|v| u32::try_from(v).ok())
+            .map(Some)
+            .ok_or_else(|| D::Error::custom("line number out of range")),
+        Some(Value::String(s)) => s
+            .trim()
+            .parse::<u32>()
+            .map(Some)
+            .map_err(|_| D::Error::custom(format!("invalid line number: {s:?}"))),
+        Some(other) => Err(D::Error::custom(format!(
+            "expected a line number, got {other}"
+        ))),
+    }
 }
 
 use super::tool_permissions::{
@@ -48,10 +75,10 @@ pub struct ReadFileToolInput {
     /// </example>
     pub path: String,
     /// Optional line number to start reading on (1-based index)
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_line_number")]
     pub start_line: Option<u32>,
     /// Optional line number to end reading on (1-based index, inclusive)
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_line_number")]
     pub end_line: Option<u32>,
 }
 
@@ -125,6 +152,20 @@ impl AgentTool for ReadFileTool {
                 .recv()
                 .await
                 .map_err(tool_content_err)?;
+
+            log::info!(
+                "read_file: path={:?} start_line={:?} end_line={:?}",
+                input.path, input.start_line, input.end_line
+            );
+
+            if input.path.trim().is_empty() {
+                return Err(tool_content_err(
+                    "The 'path' parameter is required and was empty. \
+                    You must provide a specific file path, e.g. 'src/main.rs'. \
+                    Use list_directory to discover file paths first.",
+                ));
+            }
+
             let fs = project.read_with(cx, |project, _cx| project.fs().clone());
             let canonical_roots = canonicalize_worktree_roots(&project, &fs, cx).await;
 

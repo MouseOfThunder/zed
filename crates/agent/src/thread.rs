@@ -1995,7 +1995,7 @@ impl Thread {
                 attempt
             );
 
-            log::debug!("Calling model.stream_completion, attempt {}", attempt);
+            log::info!("Starting stream_completion, attempt {}", attempt);
 
             let (mut events, mut error) = match model.stream_completion(request, cx).await {
                 Ok(events) => (events.fuse(), None),
@@ -2041,6 +2041,7 @@ impl Thread {
                     }
                 };
                 let Some(first_event) = first_event else {
+                    log::info!("LLM stream ended (no more events)");
                     break;
                 };
 
@@ -2097,6 +2098,7 @@ impl Thread {
             // tool execution, which could cause deadlocks when tools spawn subagents
             // that need their own permits.
             drop(events);
+            log::info!("Stream dropped, waiting for {} tool result(s)", tool_results.len() + early_tool_results.len());
 
             // Drop streaming tool input senders that never received their final input.
             // This prevents deadlock when the LLM stream ends (e.g. because of an error)
@@ -2378,6 +2380,34 @@ impl Thread {
     ) -> Option<Task<LanguageModelToolResult>> {
         cx.notify();
 
+        // Silently drop read_file calls with no path – these are spurious parallel
+        // duplicates emitted by models like Qwen. Return a silent Ok so the model
+        // does not see an error and does not retry. Nothing is shown in the UI.
+        if tool_use.name.as_ref() == "read_file" && tool_use.is_input_complete {
+            let path_empty = tool_use
+                .input
+                .get("path")
+                .map(|v| v.as_str().map(|s| s.trim().is_empty()).unwrap_or(false))
+                .unwrap_or(true);
+            if path_empty {
+                log::warn!(
+                    "Dropping read_file call {} with empty/missing path (duplicate parallel call)",
+                    tool_use.id
+                );
+                let content = LanguageModelToolResultContent::Text(Arc::from(
+                    "Skipped: duplicate read_file call with no path. \
+                     Use the result from the other read_file call.",
+                ));
+                return Some(Task::ready(LanguageModelToolResult {
+                    tool_use_id: tool_use.id,
+                    tool_name: tool_use.name,
+                    is_error: false,
+                    content: vec![content.clone()],
+                    output: serde_json::to_value(&[content]).ok(),
+                }));
+            }
+        }
+
         let tool = self.tool(tool_use.name.as_ref());
         let mut title = SharedString::from(&tool_use.name);
         let mut kind = acp::ToolKind::Other;
@@ -2403,6 +2433,10 @@ impl Thread {
             if tool.supports_input_streaming() {
                 let running_turn = self.running_turn.as_mut()?;
                 if let Some(sender) = running_turn.streaming_tool_inputs.get_mut(&tool_use.id) {
+                    log::trace!(
+                        "Forwarding partial input to streaming tool {} (id={})",
+                        tool_use.name, tool_use.id
+                    );
                     sender.send_partial(tool_use.input);
                     return None;
                 }
@@ -2414,7 +2448,7 @@ impl Thread {
                     .insert(tool_use.id.clone(), sender);
 
                 let tool = tool.clone();
-                log::debug!("Running streaming tool {}", tool_use.name);
+                log::info!("Running streaming tool {}", tool_use.name);
                 return Some(self.run_tool(
                     tool,
                     tool_input,
@@ -2425,6 +2459,15 @@ impl Thread {
                     cx,
                 ));
             } else {
+                // The tool does not support streaming input.  The model sent a
+                // partial (is_input_complete=false) event for a non-streaming
+                // tool – this happens when a provider uses finish_reason:"stop"
+                // instead of "tool_calls" so the complete event never arrives.
+                log::warn!(
+                    "Dropping partial tool-use event for non-streaming tool {} (id={}) – \
+                     provider may have sent finish_reason:\"stop\" instead of \"tool_calls\"",
+                    tool_use.name, tool_use.id
+                );
                 return None;
             }
         }
@@ -2439,7 +2482,7 @@ impl Thread {
             return None;
         }
 
-        log::debug!("Running tool {}", tool_use.name);
+        log::info!("Running tool {}", tool_use.name);
         let tool_input = ToolInput::ready(tool_use.input);
         Some(self.run_tool(
             tool,
@@ -3328,7 +3371,10 @@ impl<T: DeserializeOwned> ToolInput<T> {
         Ok(match value {
             ToolInputPayload::Partial(payload) => ToolInputPayload::Partial(payload),
             ToolInputPayload::Full(payload) => {
-                ToolInputPayload::Full(serde_json::from_value(payload)?)
+                ToolInputPayload::Full(serde_json::from_value(payload.clone()).map_err(|e| {
+                    log::warn!("tool input deserialization failed: {} | raw={}", e, payload);
+                    e
+                })?)
             }
             ToolInputPayload::InvalidJson { error_message } => {
                 ToolInputPayload::InvalidJson { error_message }
