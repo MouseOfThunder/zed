@@ -1337,6 +1337,126 @@ async fn test_concurrent_tool_calls(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_mutating_tool_calls_same_scope_are_serialized(cx: &mut TestAppContext) {
+    let ThreadTest { thread, model, .. } = setup(cx, TestModel::Fake).await;
+    let fake_model = model.as_fake();
+    let (tool, max_active, completions) = ScopedMutationTool::new();
+
+    thread.update(cx, |thread, _cx| thread.add_tool(tool));
+
+    let _events = thread
+        .update(cx, |thread, cx| {
+            thread.send(
+                UserMessageId::new(),
+                ["Run two scoped_mutation calls on the same path."],
+                cx,
+            )
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    for (id, label, ms) in [("m1", "first", 120_u64), ("m2", "second", 10_u64)] {
+        let input = json!({ "path": "root/a.txt", "ms": ms, "label": label });
+        fake_model.send_last_completion_stream_event(LanguageModelCompletionEvent::ToolUse(
+            LanguageModelToolUse {
+                id: id.into(),
+                name: ScopedMutationTool::NAME.into(),
+                raw_input: input.to_string(),
+                input,
+                is_input_complete: true,
+                thought_signature: None,
+            },
+        ));
+    }
+    fake_model.send_last_completion_stream_event(LanguageModelCompletionEvent::Stop(
+        StopReason::ToolUse,
+    ));
+    fake_model.end_last_completion_stream();
+
+    let deadline = cx.executor().num_cpus() * 200;
+    for _ in 0..deadline {
+        cx.executor().advance_clock(Duration::from_millis(10));
+        cx.run_until_parked();
+        if completions.lock().unwrap().len() == 2 {
+            break;
+        }
+    }
+
+    let completed = completions.lock().unwrap().clone();
+    assert_eq!(
+        max_active.load(Ordering::SeqCst),
+        1,
+        "same-scope mutating calls should not overlap"
+    );
+    assert_eq!(
+        completed,
+        vec![
+            "first@root/a.txt".to_string(),
+            "second@root/a.txt".to_string()
+        ]
+    );
+
+    thread.update(cx, |thread, cx| thread.cancel(cx)).await;
+}
+
+#[gpui::test]
+async fn test_mutating_tool_calls_disjoint_scopes_can_overlap(cx: &mut TestAppContext) {
+    let ThreadTest { thread, model, .. } = setup(cx, TestModel::Fake).await;
+    let fake_model = model.as_fake();
+    let (tool, max_active, completions) = ScopedMutationTool::new();
+
+    thread.update(cx, |thread, _cx| thread.add_tool(tool));
+
+    let _events = thread
+        .update(cx, |thread, cx| {
+            thread.send(
+                UserMessageId::new(),
+                ["Run two scoped_mutation calls on different paths."],
+                cx,
+            )
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    for (id, path, label) in [
+        ("d1", "root/a.txt", "first"),
+        ("d2", "root/b.txt", "second"),
+    ] {
+        let input = json!({ "path": path, "ms": 120_u64, "label": label });
+        fake_model.send_last_completion_stream_event(LanguageModelCompletionEvent::ToolUse(
+            LanguageModelToolUse {
+                id: id.into(),
+                name: ScopedMutationTool::NAME.into(),
+                raw_input: input.to_string(),
+                input,
+                is_input_complete: true,
+                thought_signature: None,
+            },
+        ));
+    }
+    fake_model.send_last_completion_stream_event(LanguageModelCompletionEvent::Stop(
+        StopReason::ToolUse,
+    ));
+    fake_model.end_last_completion_stream();
+
+    let deadline = cx.executor().num_cpus() * 200;
+    for _ in 0..deadline {
+        cx.executor().advance_clock(Duration::from_millis(10));
+        cx.run_until_parked();
+        if completions.lock().unwrap().len() == 2 {
+            break;
+        }
+    }
+
+    assert!(
+        max_active.load(Ordering::SeqCst) >= 2,
+        "disjoint-scope mutating calls should be allowed to overlap"
+    );
+
+    thread.update(cx, |thread, cx| thread.cancel(cx)).await;
+}
+
+#[gpui::test]
 async fn test_profiles(cx: &mut TestAppContext) {
     let ThreadTest {
         model, thread, fs, ..
@@ -4254,6 +4374,7 @@ async fn setup(cx: &mut TestAppContext, model: TestModel) -> ThreadTest {
                             StreamingEchoTool::NAME: true,
                             StreamingJsonErrorContextTool::NAME: true,
                             StreamingFailingEchoTool::NAME: true,
+                            ScopedMutationTool::NAME: true,
                             TerminalTool::NAME: true,
                             UpdatePlanTool::NAME: true,
                         }

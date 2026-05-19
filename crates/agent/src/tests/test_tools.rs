@@ -2,7 +2,7 @@ use super::*;
 use gpui::{App, SharedString, Task};
 use std::future;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 /// A streaming tool that echoes its input, used to test streaming tool
@@ -268,6 +268,81 @@ impl AgentTool for DelayTool {
             let input = input.recv().await.map_err(|e| e.to_string())?;
             executor.timer(Duration::from_millis(input.ms)).await;
             Ok("Ding".to_string())
+        })
+    }
+}
+
+#[derive(JsonSchema, Serialize, Deserialize)]
+pub struct ScopedMutationToolInput {
+    pub path: String,
+    pub ms: u64,
+    pub label: String,
+}
+
+pub struct ScopedMutationTool {
+    active: Arc<AtomicUsize>,
+    max_active: Arc<AtomicUsize>,
+    completions: Arc<Mutex<Vec<String>>>,
+}
+
+impl ScopedMutationTool {
+    pub fn new() -> (Self, Arc<AtomicUsize>, Arc<Mutex<Vec<String>>>) {
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_active = Arc::new(AtomicUsize::new(0));
+        let completions = Arc::new(Mutex::new(Vec::new()));
+
+        (
+            Self {
+                active: active.clone(),
+                max_active: max_active.clone(),
+                completions: completions.clone(),
+            },
+            max_active,
+            completions,
+        )
+    }
+}
+
+impl AgentTool for ScopedMutationTool {
+    type Input = ScopedMutationToolInput;
+    type Output = String;
+
+    const NAME: &'static str = "scoped_mutation";
+
+    fn kind() -> acp::ToolKind {
+        acp::ToolKind::Edit
+    }
+
+    fn initial_title(
+        &self,
+        _input: Result<Self::Input, serde_json::Value>,
+        _cx: &mut App,
+    ) -> SharedString {
+        "Scoped Mutation".into()
+    }
+
+    fn run(
+        self: Arc<Self>,
+        input: ToolInput<Self::Input>,
+        _event_stream: ToolCallEventStream,
+        cx: &mut App,
+    ) -> Task<Result<Self::Output, Self::Output>> {
+        let executor = cx.background_executor().clone();
+        cx.foreground_executor().spawn(async move {
+            let input = input.recv().await.map_err(|e| e.to_string())?;
+
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_active.fetch_max(active, Ordering::SeqCst);
+
+            executor.timer(Duration::from_millis(input.ms)).await;
+
+            self.completions
+                .lock()
+                .unwrap()
+                .push(format!("{}@{}", input.label, input.path));
+            self.active.fetch_sub(1, Ordering::SeqCst);
+
+            Ok(input.label)
         })
     }
 }

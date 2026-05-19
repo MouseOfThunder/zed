@@ -1916,6 +1916,7 @@ impl Thread {
             tools: self.enabled_tools(cx),
             cancellation_tx,
             streaming_tool_inputs: HashMap::default(),
+            pending_mutation_scopes: HashMap::default(),
             _task: cx.spawn(async move |this, cx| {
                 log::debug!("Starting agent turn execution");
 
@@ -2415,6 +2416,7 @@ impl Thread {
             title = tool.initial_title(tool_use.input.clone(), cx);
             kind = tool.kind();
         }
+        let is_mutating_tool = Self::is_mutating_tool(tool_use.name.as_ref(), kind);
 
         self.send_or_update_tool_use(&tool_use, title, kind, event_stream);
 
@@ -2431,6 +2433,17 @@ impl Thread {
 
         if !tool_use.is_input_complete {
             if tool.supports_input_streaming() {
+                if is_mutating_tool {
+                    // Mutating tools are started only once input is complete so
+                    // writes can be serialized centrally by scope.
+                    log::trace!(
+                        "Deferring partial input for mutating tool {} (id={})",
+                        tool_use.name,
+                        tool_use.id
+                    );
+                    return None;
+                }
+
                 let running_turn = self.running_turn.as_mut()?;
                 if let Some(sender) = running_turn.streaming_tool_inputs.get_mut(&tool_use.id) {
                     log::trace!(
@@ -2483,16 +2496,183 @@ impl Thread {
         }
 
         log::info!("Running tool {}", tool_use.name);
-        let tool_input = ToolInput::ready(tool_use.input);
-        Some(self.run_tool(
+        Some(self.run_tool_with_mutation_serialization(
             tool,
-            tool_input,
             tool_use.id,
             tool_use.name,
+            kind,
+            tool_use.input,
             event_stream,
             cancellation_rx,
             cx,
         ))
+    }
+
+    fn run_tool_with_mutation_serialization(
+        &mut self,
+        tool: Arc<dyn AnyAgentTool>,
+        tool_use_id: LanguageModelToolUseId,
+        tool_name: Arc<str>,
+        tool_kind: acp::ToolKind,
+        tool_input_json: serde_json::Value,
+        event_stream: &ThreadEventStream,
+        cancellation_rx: watch::Receiver<bool>,
+        cx: &mut Context<Self>,
+    ) -> Task<LanguageModelToolResult> {
+        let mutation_scopes =
+            Self::mutation_scopes_for_tool(tool_name.as_ref(), tool_kind, &tool_input_json);
+
+        if mutation_scopes.is_empty() {
+            return self.run_tool(
+                tool,
+                ToolInput::ready(tool_input_json),
+                tool_use_id,
+                tool_name,
+                event_stream,
+                cancellation_rx,
+                cx,
+            );
+        }
+
+        let dependencies = self
+            .running_turn
+            .as_ref()
+            .map(|turn| {
+                mutation_scopes
+                    .iter()
+                    .filter_map(|scope| turn.pending_mutation_scopes.get(scope).cloned())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        let (mut sender, delayed_tool_input) = ToolInputSender::channel();
+        let mut feeder_cancellation_rx = cancellation_rx.clone();
+
+        cx.foreground_executor()
+            .spawn(async move {
+                for dependency in dependencies {
+                    futures::select! {
+                        _ = dependency.fuse() => {}
+                        _ = feeder_cancellation_rx.changed().fuse() => {
+                            if *feeder_cancellation_rx.borrow() {
+                                return;
+                            }
+                        }
+                    }
+                }
+
+                if *feeder_cancellation_rx.borrow() {
+                    return;
+                }
+
+                sender.send_full(tool_input_json);
+            })
+            .detach();
+
+        let tool_task = self.run_tool(
+            tool,
+            delayed_tool_input,
+            tool_use_id,
+            tool_name,
+            event_stream,
+            cancellation_rx,
+            cx,
+        );
+
+        let (done_tx, done_rx) = oneshot::channel::<()>();
+        let wrapped_tool_task = cx.foreground_executor().spawn(async move {
+            let result = tool_task.await;
+            let _ = done_tx.send(());
+            result
+        });
+        let completion_tail = cx
+            .foreground_executor()
+            .spawn(async move {
+                let _ = done_rx.await;
+            })
+            .shared();
+
+        if let Some(turn) = self.running_turn.as_mut() {
+            for scope in mutation_scopes {
+                turn.pending_mutation_scopes
+                    .insert(scope, completion_tail.clone());
+            }
+        }
+
+        wrapped_tool_task
+    }
+
+    fn is_mutating_tool(tool_name: &str, tool_kind: acp::ToolKind) -> bool {
+        matches!(
+            tool_kind,
+            acp::ToolKind::Edit | acp::ToolKind::Delete | acp::ToolKind::Move
+        ) || matches!(tool_name, "apply_code_action" | "rename_symbol")
+    }
+
+    fn mutation_scopes_for_tool(
+        tool_name: &str,
+        tool_kind: acp::ToolKind,
+        input: &serde_json::Value,
+    ) -> Vec<String> {
+        if !Self::is_mutating_tool(tool_name, tool_kind) {
+            return Vec::new();
+        }
+
+        let mut scopes = Vec::new();
+        match tool_name {
+            "move_path" | "copy_path" => {
+                for key in ["source_path", "destination_path"] {
+                    if let Some(path) = Self::path_input_value(input, key) {
+                        scopes.extend(Self::expand_path_to_lock_scopes(&path));
+                    }
+                }
+            }
+            "rename_symbol" | "apply_code_action" => {
+                scopes.push("workspace://write".to_string());
+            }
+            _ => {
+                if let Some(path) = Self::path_input_value(input, "path") {
+                    scopes.extend(Self::expand_path_to_lock_scopes(&path));
+                }
+            }
+        }
+
+        if scopes.is_empty() {
+            scopes.push("workspace://write".to_string());
+        }
+
+        let mut seen = HashSet::default();
+        scopes.retain(|scope| seen.insert(scope.clone()));
+        scopes
+    }
+
+    fn path_input_value(input: &serde_json::Value, key: &str) -> Option<String> {
+        input
+            .get(key)
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+    }
+
+    fn expand_path_to_lock_scopes(path: &str) -> Vec<String> {
+        let normalized = path.trim().replace('\\', "/");
+        let normalized = normalized.trim_matches('/');
+        if normalized.is_empty() {
+            return Vec::new();
+        }
+
+        let mut scopes = Vec::new();
+        let mut current = String::new();
+        for segment in normalized.split('/').filter(|segment| !segment.is_empty()) {
+            if !current.is_empty() {
+                current.push('/');
+            }
+            current.push_str(segment);
+            scopes.push(format!("path://{current}"));
+        }
+
+        scopes
     }
 
     fn run_tool(
@@ -3285,6 +3465,9 @@ struct RunningTurn {
     /// Senders for tools that support input streaming and have already been
     /// started but are still receiving input from the LLM.
     streaming_tool_inputs: HashMap<LanguageModelToolUseId, ToolInputSender>,
+    /// Completion tails for mutating scopes. Each scope points to the latest
+    /// mutating tool completion so conflicting writes can be serialized.
+    pending_mutation_scopes: HashMap<String, Shared<Task<()>>>,
 }
 
 impl RunningTurn {
