@@ -4050,6 +4050,189 @@ async fn test_send_retry_on_error(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_send_prompt_too_large_auto_compacts_and_retries_once(cx: &mut TestAppContext) {
+    let ThreadTest { thread, model, .. } = setup(cx, TestModel::Fake).await;
+    let fake_model = model.as_fake();
+    let summary_model = Arc::new(FakeLanguageModel::default());
+    let fake_summary_model = summary_model.as_fake();
+
+    thread.update(cx, |thread, cx| {
+        thread.set_summarization_model(Some(summary_model.clone()), cx);
+        thread.set_title("Existing title".into(), cx);
+    });
+
+    let mut first_turn_events = thread
+        .update(cx, |thread, cx| {
+            thread.send(UserMessageId::new(), ["First message"], cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    fake_model.send_last_completion_stream_text_chunk("First reply");
+    fake_model.end_last_completion_stream();
+
+    while let Some(Ok(event)) = first_turn_events.next().await {
+        if matches!(event, ThreadEvent::Stop(..)) {
+            break;
+        }
+    }
+
+    let mut events = thread
+        .update(cx, |thread, cx| {
+            thread.send(UserMessageId::new(), ["Second message"], cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    fake_model.send_last_completion_stream_error(LanguageModelCompletionError::PromptTooLarge {
+        tokens: None,
+    });
+    fake_model.end_last_completion_stream();
+    cx.run_until_parked();
+
+    assert_eq!(
+        fake_summary_model.pending_completions().len(),
+        1,
+        "Expected one summary generation request after PromptTooLarge"
+    );
+
+    fake_summary_model.send_last_completion_stream_text_chunk("Compacted summary text");
+    fake_summary_model.end_last_completion_stream();
+    cx.run_until_parked();
+
+    let completions = fake_model.pending_completions();
+    assert_eq!(
+        completions.len(),
+        1,
+        "Expected one active retry request after compaction"
+    );
+
+    let retry_completion = completions.last().unwrap();
+    assert!(
+        retry_completion.messages.iter().any(|message| {
+            message.content.iter().any(|content| {
+                matches!(content, MessageContent::Text(text) if text.contains("Earlier conversation compacted into summary:"))
+            })
+        }),
+        "Retry request should include the compacted summary marker"
+    );
+
+    fake_model.send_last_completion_stream_text_chunk("Recovered response");
+    fake_model.end_last_completion_stream();
+    cx.run_until_parked();
+
+    let mut retries = Vec::new();
+    while let Some(event) = events.next().await {
+        match event {
+            Ok(ThreadEvent::Retry(retry_status)) => retries.push(retry_status),
+            Ok(ThreadEvent::Stop(..)) => break,
+            Err(error) => panic!("unexpected turn error: {error}"),
+            _ => {}
+        }
+    }
+
+    assert_eq!(retries.len(), 1);
+    assert_eq!(retries[0].attempt, 1);
+    assert_eq!(retries[0].max_attempts, 1);
+
+    thread.read_with(cx, |thread, _cx| {
+        let markdown = thread.to_markdown();
+        assert!(markdown.contains("Earlier conversation compacted into summary:"));
+        assert!(markdown.contains("Recovered response"));
+    });
+}
+
+#[gpui::test]
+async fn test_send_prompt_too_large_retry_only_once_after_compaction(cx: &mut TestAppContext) {
+    let ThreadTest { thread, model, .. } = setup(cx, TestModel::Fake).await;
+    let fake_model = model.as_fake();
+    let summary_model = Arc::new(FakeLanguageModel::default());
+    let fake_summary_model = summary_model.as_fake();
+
+    thread.update(cx, |thread, cx| {
+        thread.set_summarization_model(Some(summary_model.clone()), cx);
+        thread.set_title("Existing title".into(), cx);
+    });
+
+    let mut first_turn_events = thread
+        .update(cx, |thread, cx| {
+            thread.send(UserMessageId::new(), ["First message"], cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    fake_model.send_last_completion_stream_text_chunk("First reply");
+    fake_model.end_last_completion_stream();
+
+    while let Some(Ok(event)) = first_turn_events.next().await {
+        if matches!(event, ThreadEvent::Stop(..)) {
+            break;
+        }
+    }
+
+    let mut events = thread
+        .update(cx, |thread, cx| {
+            thread.send(UserMessageId::new(), ["Second message"], cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    fake_model.send_last_completion_stream_error(LanguageModelCompletionError::PromptTooLarge {
+        tokens: None,
+    });
+    fake_model.end_last_completion_stream();
+    cx.run_until_parked();
+
+    assert_eq!(fake_summary_model.pending_completions().len(), 1);
+    fake_summary_model.send_last_completion_stream_text_chunk("Compacted summary text");
+    fake_summary_model.end_last_completion_stream();
+    cx.run_until_parked();
+
+    let completions = fake_model.pending_completions();
+    assert_eq!(
+        completions.len(),
+        1,
+        "Expected exactly one active retry request after compaction"
+    );
+
+    fake_model.send_last_completion_stream_error(LanguageModelCompletionError::PromptTooLarge {
+        tokens: None,
+    });
+    fake_model.end_last_completion_stream();
+    cx.run_until_parked();
+
+    assert_eq!(
+        fake_model.pending_completions().len(),
+        0,
+        "No additional retry request should be active after the second PromptTooLarge"
+    );
+
+    let mut retries = Vec::new();
+    let mut errors = Vec::new();
+    while let Some(event) = events.next().await {
+        match event {
+            Ok(ThreadEvent::Retry(retry_status)) => retries.push(retry_status),
+            Ok(ThreadEvent::Stop(..)) => break,
+            Err(error) => {
+                errors.push(error);
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert_eq!(retries.len(), 1);
+    assert_eq!(errors.len(), 1);
+    let prompt_too_large_error = errors[0]
+        .downcast_ref::<LanguageModelCompletionError>()
+        .expect("expected LanguageModelCompletionError");
+    assert!(matches!(
+        prompt_too_large_error,
+        LanguageModelCompletionError::PromptTooLarge { .. }
+    ));
+}
+
+#[gpui::test]
 async fn test_send_retry_finishes_tool_calls_on_error(cx: &mut TestAppContext) {
     let ThreadTest { thread, model, .. } = setup(cx, TestModel::Fake).await;
     let fake_model = model.as_fake();

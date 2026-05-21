@@ -64,6 +64,7 @@ use util::{ResultExt, debug_panic, markdown::MarkdownCodeBlock, paths::PathStyle
 use uuid::Uuid;
 
 const TOOL_CANCELED_MESSAGE: &str = "Tool canceled by user";
+const COMPACTED_SUMMARY_PREFIX: &str = "Earlier conversation compacted into summary:";
 pub const MAX_TOOL_NAME_LENGTH: usize = 64;
 pub const MAX_SUBAGENT_DEPTH: u8 = 1;
 
@@ -109,6 +110,7 @@ impl std::fmt::Display for PromptId {
 
 pub(crate) const MAX_RETRY_ATTEMPTS: u8 = 4;
 pub(crate) const BASE_RETRY_DELAY: Duration = Duration::from_secs(5);
+const AUTO_COMPACT_RETRY_ATTEMPTS: u8 = 1;
 
 #[derive(Debug, Clone)]
 enum RetryStrategy {
@@ -2137,10 +2139,25 @@ impl Thread {
             }
 
             if let Some(error) = error {
+                let compacted_after_prompt_too_large = if matches!(
+                    error,
+                    LanguageModelCompletionError::PromptTooLarge { .. }
+                ) && attempt == 0
+                {
+                    Self::compact_thread_for_prompt_too_large(this, cx).await?
+                } else {
+                    false
+                };
+
                 attempt += 1;
                 let retry = this.update(cx, |this, cx| {
                     let user_store = this.user_store.read(cx);
-                    this.handle_completion_error(error, attempt, user_store.plan())
+                    this.handle_completion_error(
+                        error,
+                        attempt,
+                        user_store.plan(),
+                        compacted_after_prompt_too_large,
+                    )
                 })??;
                 let timer = cx.background_executor().timer(retry.duration);
                 event_stream.send_retry(retry);
@@ -2202,11 +2219,25 @@ impl Thread {
         Ok(())
     }
 
+    async fn compact_thread_for_prompt_too_large(
+        this: &WeakEntity<Self>,
+        cx: &mut AsyncApp,
+    ) -> Result<bool> {
+        let summary_task = this.update(cx, |this, cx| this.summary(cx))?;
+        let Some(summary) = summary_task.await else {
+            return Ok(false);
+        };
+
+        let compacted = this.update(cx, |this, cx| this.compact_history_with_summary(summary, cx))?;
+        Ok(compacted)
+    }
+
     fn handle_completion_error(
         &mut self,
         error: LanguageModelCompletionError,
         attempt: u8,
         plan: Option<Plan>,
+        compacted_after_prompt_too_large: bool,
     ) -> Result<acp_thread::RetryStatus> {
         let Some(model) = self.model.as_ref() else {
             return Err(anyhow!(error));
@@ -2220,6 +2251,22 @@ impl Thread {
 
         if !auto_retry {
             return Err(anyhow!(error));
+        }
+
+        if compacted_after_prompt_too_large
+            && matches!(error, LanguageModelCompletionError::PromptTooLarge { .. })
+        {
+            if attempt > AUTO_COMPACT_RETRY_ATTEMPTS {
+                return Err(anyhow!(error));
+            }
+
+            return Ok(acp_thread::RetryStatus {
+                last_error: error.to_string().into(),
+                attempt: attempt as usize,
+                max_attempts: AUTO_COMPACT_RETRY_ATTEMPTS as usize,
+                started_at: Instant::now(),
+                duration: Duration::ZERO,
+            });
         }
 
         let Some(strategy) = Self::retry_strategy_for(&error) else {
@@ -3015,6 +3062,59 @@ impl Thread {
     fn clear_summary(&mut self) {
         self.summary = None;
         self.pending_summary_generation = None;
+    }
+
+    fn compact_history_with_summary(
+        &mut self,
+        summary: SharedString,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let mut preserved_conversation_messages = 0usize;
+        let mut preserve_from = None;
+
+        for (ix, message) in self.messages.iter().enumerate().rev() {
+            if matches!(message, Message::User(_) | Message::Agent(_)) {
+                preserved_conversation_messages += 1;
+                if preserved_conversation_messages >= 2 {
+                    preserve_from = Some(ix);
+                    break;
+                }
+            }
+        }
+
+        let Some(preserve_from) = preserve_from else {
+            return false;
+        };
+
+        if preserve_from == 0 {
+            return false;
+        }
+
+        let removed_messages = self.messages.drain(0..preserve_from).collect::<Vec<_>>();
+        if removed_messages.is_empty() {
+            return false;
+        }
+
+        for message in &removed_messages {
+            if let Message::User(message) = message {
+                self.request_token_usage.remove(&message.id);
+            }
+        }
+
+        self.messages.insert(
+            0,
+            Message::Agent(AgentMessage {
+                content: vec![AgentMessageContent::Text(format!(
+                    "{COMPACTED_SUMMARY_PREFIX}\n\n{summary}"
+                ))],
+                ..Default::default()
+            }),
+        );
+
+        self.updated_at = Utc::now();
+        self.clear_summary();
+        cx.notify();
+        true
     }
 
     fn last_user_message(&self) -> Option<&UserMessage> {
