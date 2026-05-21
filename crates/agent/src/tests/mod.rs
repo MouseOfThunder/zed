@@ -318,7 +318,7 @@ async fn test_terminal_tool_timeout_kills_handle(cx: &mut TestAppContext) {
         tool.run(
             ToolInput::resolved(crate::TerminalToolInput {
                 command: "sleep 1000".to_string(),
-                cd: ".".to_string(),
+                cd: Some(".".to_string()),
                 timeout_ms: Some(5),
             }),
             event_stream,
@@ -385,7 +385,7 @@ async fn test_terminal_tool_without_timeout_does_not_kill_handle(cx: &mut TestAp
         tool.run(
             ToolInput::resolved(crate::TerminalToolInput {
                 command: "sleep 1000".to_string(),
-                cd: ".".to_string(),
+                cd: Some(".".to_string()),
                 timeout_ms: None,
             }),
             event_stream,
@@ -2379,6 +2379,85 @@ async fn test_terminal_tool_cancellation_captures_output(cx: &mut TestAppContext
 
     // Verify we can send a new message after cancellation
     verify_thread_recovery(&thread, &fake_model, cx).await;
+}
+
+#[gpui::test]
+async fn test_terminal_tool_accepts_run_command_alias(cx: &mut TestAppContext) {
+    let ThreadTest { model, thread, .. } = setup(cx, TestModel::Fake).await;
+    always_allow_tools(cx);
+    let fake_model = model.as_fake();
+
+    let environment = Rc::new(cx.update(|cx| {
+        FakeThreadEnvironment::default().with_terminal(FakeTerminalHandle::new_with_immediate_exit(
+            cx, 0,
+        ))
+    }));
+
+    let mut events = thread
+        .update(cx, |thread, cx| {
+            thread.add_tool(crate::TerminalTool::new(
+                thread.project().clone(),
+                environment,
+            ));
+            thread.send(UserMessageId::new(), ["run a command"], cx)
+        })
+        .unwrap();
+
+    cx.run_until_parked();
+
+    fake_model.send_last_completion_stream_event(LanguageModelCompletionEvent::ToolUse(
+        LanguageModelToolUse {
+            id: "terminal_tool_alias_1".into(),
+            name: "run_command".into(),
+            raw_input: r#"{"command": "echo hello", "cd": "."}"#.into(),
+            input: json!({"command": "echo hello", "cd": "."}),
+            is_input_complete: true,
+            thought_signature: None,
+        },
+    ));
+    fake_model.end_last_completion_stream();
+
+    wait_for_terminal_tool_started(&mut events, cx).await;
+    cx.run_until_parked();
+
+    fake_model
+        .send_last_completion_stream_event(LanguageModelCompletionEvent::Stop(StopReason::EndTurn));
+    fake_model.end_last_completion_stream();
+
+    let remaining_events = collect_events_until_stop(&mut events, cx).await;
+    assert_eq!(stop_events(remaining_events), vec![acp::StopReason::EndTurn]);
+
+    thread.update(cx, |thread, _cx| {
+        let message = thread.last_received_or_pending_message().unwrap();
+        let agent_message = message.as_agent_message().unwrap();
+
+        let tool_use = agent_message
+            .content
+            .iter()
+            .find_map(|content| match content {
+                AgentMessageContent::ToolUse(tool_use) => Some(tool_use),
+                _ => None,
+            })
+            .expect("expected tool use in agent message");
+
+        assert_eq!(tool_use.name.as_ref(), "run_command");
+
+        let tool_result = agent_message
+            .tool_results
+            .get(&tool_use.id)
+            .expect("expected tool result");
+
+        assert!(
+            !tool_result.is_error,
+            "expected run_command alias to succeed, got: {}",
+            tool_result.text_contents()
+        );
+        assert!(
+            tool_result.text_contents().contains("command output"),
+            "expected terminal output to be returned, got: {}",
+            tool_result.text_contents()
+        );
+    });
 }
 
 #[gpui::test]
@@ -4797,7 +4876,7 @@ async fn test_terminal_tool_permission_rules(cx: &mut TestAppContext) {
             tool.run(
                 ToolInput::resolved(crate::TerminalToolInput {
                     command: "rm -rf /".to_string(),
-                    cd: ".".to_string(),
+                    cd: Some(".".to_string()),
                     timeout_ms: None,
                 }),
                 event_stream,
@@ -4849,7 +4928,7 @@ async fn test_terminal_tool_permission_rules(cx: &mut TestAppContext) {
             tool.run(
                 ToolInput::resolved(crate::TerminalToolInput {
                     command: "echo hello".to_string(),
-                    cd: ".".to_string(),
+                    cd: Some(".".to_string()),
                     timeout_ms: None,
                 }),
                 event_stream,
@@ -4907,7 +4986,7 @@ async fn test_terminal_tool_permission_rules(cx: &mut TestAppContext) {
             tool.run(
                 ToolInput::resolved(crate::TerminalToolInput {
                     command: "sudo rm file".to_string(),
-                    cd: ".".to_string(),
+                    cd: Some(".".to_string()),
                     timeout_ms: None,
                 }),
                 event_stream,
@@ -4954,7 +5033,7 @@ async fn test_terminal_tool_permission_rules(cx: &mut TestAppContext) {
             tool.run(
                 ToolInput::resolved(crate::TerminalToolInput {
                     command: "echo hello".to_string(),
-                    cd: ".".to_string(),
+                    cd: Some(".".to_string()),
                     timeout_ms: None,
                 }),
                 event_stream,

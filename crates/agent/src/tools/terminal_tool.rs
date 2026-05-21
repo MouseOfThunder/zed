@@ -46,7 +46,9 @@ pub struct TerminalToolInput {
     /// REMINDER: read-only git commands (`git log`, `git diff`, `git show`, `git blame`) MUST include `--no-pager` (e.g. `git --no-pager log`). Git commands that may open an editor (`git rebase`, `git commit`, `git merge`, `git tag`) MUST be prefixed with `GIT_EDITOR=true ` (e.g. `GIT_EDITOR=true git rebase origin/main`). Otherwise the terminal will hang.
     pub command: String,
     /// Working directory for the command. This must be one of the root directories of the project.
-    pub cd: String,
+    /// If omitted, defaults to the project's root (works for single-root workspaces).
+    #[serde(default, alias = "cwd", alias = "working_directory", alias = "working_dir", alias = "dir")]
+    pub cd: Option<String>,
     /// Optional maximum runtime (in milliseconds). If exceeded, the running terminal task is killed.
     pub timeout_ms: Option<u64>,
 }
@@ -264,7 +266,7 @@ fn working_dir(
     cx: &mut App,
 ) -> Result<Option<PathBuf>> {
     let project = project.read(cx);
-    let cd = &input.cd;
+    let cd = input.cd.as_deref().unwrap_or("");
 
     if cd == "." || cd.is_empty() {
         // Accept "." or "" as meaning "the one worktree" if we only have one worktree.
@@ -308,7 +310,7 @@ mod tests {
         let input = TerminalToolInput {
             command: "(nix run nixpkgs#hello > /tmp/nix-server.log 2>&1 &)\nsleep 5\ncat /tmp/nix-server.log\npkill -f \"node.*index.js\" || echo \"No server process found\""
                 .to_string(),
-            cd: ".".to_string(),
+            cd: Some(".".to_string()),
             timeout_ms: None,
         };
 
@@ -367,7 +369,7 @@ mod tests {
         for cmd in dangerous_commands {
             let input = TerminalToolInput {
                 command: cmd.to_string(),
-                cd: ".".to_string(),
+                cd: Some(".".to_string()),
                 timeout_ms: None,
             };
 
@@ -404,7 +406,7 @@ mod tests {
     fn test_initial_title_single_line_command() {
         let input = TerminalToolInput {
             command: "echo 'hello world'".to_string(),
-            cd: ".".to_string(),
+            cd: Some(".".to_string()),
             timeout_ms: None,
         };
 
@@ -433,7 +435,7 @@ mod tests {
 
         let input = TerminalToolInput {
             command: long_command,
-            cd: ".".to_string(),
+            cd: Some(".".to_string()),
             timeout_ms: None,
         };
 
@@ -639,7 +641,7 @@ mod tests {
             tool.run(
                 crate::ToolInput::resolved(TerminalToolInput {
                     command: "echo $HOME".to_string(),
-                    cd: "root".to_string(),
+                    cd: Some("root".to_string()),
                     timeout_ms: None,
                 }),
                 event_stream,
@@ -706,7 +708,7 @@ mod tests {
             tool.run(
                 crate::ToolInput::resolved(TerminalToolInput {
                     command: "echo $HOME".to_string(),
-                    cd: "root".to_string(),
+                    cd: Some("root".to_string()),
                     timeout_ms: None,
                 }),
                 event_stream,
@@ -767,7 +769,7 @@ mod tests {
             tool.run(
                 crate::ToolInput::resolved(TerminalToolInput {
                     command: "echo $(rm -rf /)".to_string(),
-                    cd: "root".to_string(),
+                    cd: Some("root".to_string()),
                     timeout_ms: None,
                 }),
                 event_stream,
@@ -836,7 +838,7 @@ mod tests {
             tool.run(
                 crate::ToolInput::resolved(TerminalToolInput {
                     command: "PAGER=blah git log --oneline".to_string(),
-                    cd: "root".to_string(),
+                    cd: Some("root".to_string()),
                     timeout_ms: None,
                 }),
                 event_stream,
@@ -909,7 +911,7 @@ mod tests {
             tool.run(
                 crate::ToolInput::resolved(TerminalToolInput {
                     command: "PAGER=blah git log".to_string(),
-                    cd: "root".to_string(),
+                    cd: Some("root".to_string()),
                     timeout_ms: None,
                 }),
                 event_stream,
@@ -1016,7 +1018,7 @@ mod tests {
             tool.run(
                 crate::ToolInput::resolved(TerminalToolInput {
                     command: command.to_string(),
-                    cd: "root".to_string(),
+                    cd: Some("root".to_string()),
                     timeout_ms: None,
                 }),
                 event_stream,
@@ -1183,7 +1185,7 @@ mod tests {
             tool.run(
                 crate::ToolInput::resolved(TerminalToolInput {
                     command: "echo $(whoami)".to_string(),
-                    cd: "root".to_string(),
+                    cd: Some("root".to_string()),
                     timeout_ms: None,
                 }),
                 event_stream,
@@ -1255,7 +1257,7 @@ mod tests {
             tool.run(
                 crate::ToolInput::resolved(TerminalToolInput {
                     command: "PAGER=other git log".to_string(),
-                    cd: "root".to_string(),
+                    cd: Some("root".to_string()),
                     timeout_ms: None,
                 }),
                 event_stream,
@@ -1321,7 +1323,7 @@ mod tests {
             tool.run(
                 crate::ToolInput::resolved(TerminalToolInput {
                     command: "A=1 B=2 git log".to_string(),
-                    cd: "root".to_string(),
+                    cd: Some("root".to_string()),
                     timeout_ms: None,
                 }),
                 event_stream,
@@ -1398,7 +1400,7 @@ mod tests {
             tool.run(
                 crate::ToolInput::resolved(TerminalToolInput {
                     command: "PAGER=\"less -R\" git log".to_string(),
-                    cd: "root".to_string(),
+                    cd: Some("root".to_string()),
                     timeout_ms: None,
                 }),
                 event_stream,

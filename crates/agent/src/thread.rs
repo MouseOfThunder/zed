@@ -1216,12 +1216,13 @@ impl Thread {
                 }
             });
 
-        let tool = self.tools.get(tool_use.name.as_ref()).cloned().or_else(|| {
+        let canonical_name = Self::normalize_tool_name(tool_use.name.as_ref());
+        let tool = self.tools.get(canonical_name).cloned().or_else(|| {
             self.context_server_registry
                 .read(cx)
                 .servers()
                 .find_map(|(_, tools)| {
-                    if let Some(tool) = tools.get(tool_use.name.as_ref()) {
+                    if let Some(tool) = tools.get(canonical_name) {
                         Some(tool.clone())
                     } else {
                         None
@@ -3215,14 +3216,30 @@ impl Thread {
         }
     }
 
+    /// Maps known alternative tool names to their canonical equivalents.
+    /// Some models (e.g. Qwen) hallucinate tool names that differ from the
+    /// registered names, so we normalize them here before lookup.
+    fn normalize_tool_name(name: &str) -> &str {
+        match name {
+            // Common hallucination: models trained on other frameworks use
+            // "run_command" instead of Zed's "terminal" tool.
+            "run_command" | "execute_command" | "bash" | "shell" => TerminalTool::NAME,
+            other => other,
+        }
+    }
+
     fn tool(&self, name: &str) -> Option<Arc<dyn AnyAgentTool>> {
-        self.running_turn.as_ref()?.tools.get(name).cloned()
+        self.running_turn
+            .as_ref()?
+            .tools
+            .get(Self::normalize_tool_name(name))
+            .cloned()
     }
 
     pub fn has_tool(&self, name: &str) -> bool {
         self.running_turn
             .as_ref()
-            .is_some_and(|turn| turn.tools.contains_key(name))
+            .is_some_and(|turn| turn.tools.contains_key(Self::normalize_tool_name(name)))
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -3553,12 +3570,12 @@ impl<T: DeserializeOwned> ToolInput<T> {
 
         Ok(match value {
             ToolInputPayload::Partial(payload) => ToolInputPayload::Partial(payload),
-            ToolInputPayload::Full(payload) => {
-                ToolInputPayload::Full(serde_json::from_value(payload.clone()).map_err(|e| {
+            ToolInputPayload::Full(payload) => ToolInputPayload::Full(
+                deserialize_tool_input_value(payload.clone()).map_err(|e| {
                     log::warn!("tool input deserialization failed: {} | raw={}", e, payload);
                     e
-                })?)
-            }
+                })?,
+            ),
             ToolInputPayload::InvalidJson { error_message } => {
                 ToolInputPayload::InvalidJson { error_message }
             }
@@ -3571,6 +3588,76 @@ impl<T: DeserializeOwned> ToolInput<T> {
             _phantom: PhantomData,
         }
     }
+}
+
+fn deserialize_tool_input_value<T: DeserializeOwned>(
+    payload: serde_json::Value,
+) -> std::result::Result<T, serde_json::Error> {
+    match serde_json::from_value(payload.clone()) {
+        Ok(value) => Ok(value),
+        Err(strict_error) => {
+            let coerced_payload = coerce_json_primitive_strings(payload.clone());
+            if coerced_payload == payload {
+                return Err(strict_error);
+            }
+
+            match serde_json::from_value(coerced_payload.clone()) {
+                Ok(value) => {
+                    log::info!(
+                        "tool input deserialization succeeded after coercing primitive strings | raw={} | coerced={}",
+                        payload,
+                        coerced_payload
+                    );
+                    Ok(value)
+                }
+                Err(_) => Err(strict_error),
+            }
+        }
+    }
+}
+
+fn coerce_json_primitive_strings(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Array(values) => serde_json::Value::Array(
+            values
+                .into_iter()
+                .map(coerce_json_primitive_strings)
+                .collect(),
+        ),
+        serde_json::Value::Object(entries) => serde_json::Value::Object(
+            entries
+                .into_iter()
+                .map(|(key, value)| (key, coerce_json_primitive_strings(value)))
+                .collect(),
+        ),
+        serde_json::Value::String(text) => coerce_json_string(text),
+        other => other,
+    }
+}
+
+fn coerce_json_string(text: String) -> serde_json::Value {
+    if text == "true" {
+        return serde_json::Value::Bool(true);
+    }
+    if text == "false" {
+        return serde_json::Value::Bool(false);
+    }
+    if text == "null" {
+        return serde_json::Value::Null;
+    }
+    if let Ok(value) = text.parse::<i64>() {
+        return serde_json::Value::Number(value.into());
+    }
+    if let Ok(value) = text.parse::<u64>() {
+        return serde_json::Value::Number(value.into());
+    }
+    if let Ok(value) = text.parse::<f64>()
+        && let Some(number) = serde_json::Number::from_f64(value)
+    {
+        return serde_json::Value::Number(number);
+    }
+
+    serde_json::Value::String(text)
 }
 
 pub enum ToolInputPayload<T> {
@@ -3765,7 +3852,7 @@ where
     }
 
     fn initial_title(&self, input: serde_json::Value, _cx: &mut App) -> SharedString {
-        let parsed_input = serde_json::from_value(input.clone()).map_err(|_| input);
+        let parsed_input = deserialize_tool_input_value(input.clone()).map_err(|_| input);
         self.0.initial_title(parsed_input, _cx)
     }
 
@@ -4607,8 +4694,25 @@ mod tests {
     use gpui::TestAppContext;
     use language_model::LanguageModelToolUseId;
     use language_model::fake_provider::FakeLanguageModel;
+    use serde::Deserialize;
     use serde_json::json;
     use std::sync::Arc;
+
+    #[derive(Deserialize)]
+    struct NumericToolInput {
+        timeout_ms: u64,
+        nested: NestedNumericToolInput,
+    }
+
+    #[derive(Deserialize)]
+    struct NestedNumericToolInput {
+        retries: u64,
+    }
+
+    #[derive(Deserialize)]
+    struct StringToolInput {
+        command: String,
+    }
 
     async fn setup_thread_for_test(cx: &mut TestAppContext) -> (Entity<Thread>, ThreadEventStream) {
         cx.update(|cx| {
@@ -4642,6 +4746,34 @@ mod tests {
 
             (thread, event_stream)
         })
+    }
+
+    #[gpui::test]
+    async fn test_tool_input_deserialization_coerces_stringified_numbers(
+        _cx: &mut TestAppContext,
+    ) {
+        let parsed: NumericToolInput = deserialize_tool_input_value(json!({
+            "timeout_ms": "120000",
+            "nested": {
+                "retries": "3"
+            }
+        }))
+        .expect("stringified numbers should deserialize");
+
+        assert_eq!(parsed.timeout_ms, 120000);
+        assert_eq!(parsed.nested.retries, 3);
+    }
+
+    #[gpui::test]
+    async fn test_tool_input_deserialization_preserves_valid_strings(
+        _cx: &mut TestAppContext,
+    ) {
+        let parsed: StringToolInput = deserialize_tool_input_value(json!({
+            "command": "120000"
+        }))
+        .expect("valid string fields should remain valid");
+
+        assert_eq!(parsed.command, "120000");
     }
 
     fn setup_parent_with_subagents(
