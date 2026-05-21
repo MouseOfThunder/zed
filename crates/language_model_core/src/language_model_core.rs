@@ -25,7 +25,10 @@ pub use crate::rate_limiter::*;
 pub use crate::request::*;
 pub use crate::role::*;
 pub use crate::tool_schema::LanguageModelToolSchemaFormat;
-pub use crate::util::{fix_streamed_json, parse_prompt_too_long, parse_tool_arguments};
+pub use crate::util::{
+    fix_streamed_json, is_context_window_overflow_message, parse_prompt_too_long,
+    parse_tool_arguments,
+};
 pub use gpui_shared_string::SharedString;
 
 #[derive(Clone, Debug)]
@@ -199,9 +202,10 @@ impl LanguageModelCompletionError {
         message: String,
         retry_after: Option<Duration>,
     ) -> Self {
-        if let Some(tokens) = parse_prompt_too_long(&message) {
+        let overflow_tokens = parse_prompt_too_long(&message);
+        if overflow_tokens.is_some() || is_context_window_overflow_message(&message) {
             Self::PromptTooLarge {
-                tokens: Some(tokens),
+                tokens: overflow_tokens,
             }
         } else if code == "upstream_http_error" {
             if let Some((upstream_status, inner_message)) =
@@ -237,7 +241,15 @@ impl LanguageModelCompletionError {
         retry_after: Option<Duration>,
     ) -> Self {
         match status_code {
-            StatusCode::BAD_REQUEST => Self::BadRequestFormat { provider, message },
+            StatusCode::BAD_REQUEST => {
+                if is_context_window_overflow_message(&message) {
+                    Self::PromptTooLarge {
+                        tokens: parse_prompt_too_long(&message),
+                    }
+                } else {
+                    Self::BadRequestFormat { provider, message }
+                }
+            }
             StatusCode::UNAUTHORIZED => Self::AuthenticationError { provider, message },
             StatusCode::FORBIDDEN => Self::PermissionError { provider, message },
             StatusCode::NOT_FOUND => Self::ApiEndpointNotFound { provider },
@@ -531,6 +543,40 @@ mod tests {
                 assert_eq!(provider.0, "anthropic");
             }
             _ => panic!("Expected ServerOverloaded error for upstream_http_503"),
+        }
+    }
+
+    #[test]
+    fn test_from_http_status_bad_request_context_overflow_maps_to_prompt_too_large() {
+        let error = LanguageModelCompletionError::from_http_status(
+            String::from("openai-compatible").into(),
+            StatusCode::BAD_REQUEST,
+            "This model's maximum context length is 65536 tokens. However, your messages resulted in 77490 tokens.".to_string(),
+            None,
+        );
+
+        match error {
+            LanguageModelCompletionError::PromptTooLarge { tokens } => {
+                assert_eq!(tokens, Some(77490));
+            }
+            _ => panic!("Expected PromptTooLarge for BAD_REQUEST context overflow"),
+        }
+    }
+
+    #[test]
+    fn test_from_cloud_failure_context_length_exceeded_maps_to_prompt_too_large() {
+        let error = LanguageModelCompletionError::from_cloud_failure(
+            String::from("openai-compatible").into(),
+            "http_400".to_string(),
+            "context_length_exceeded: prompt_tokens=77490 max_tokens=65536".to_string(),
+            None,
+        );
+
+        match error {
+            LanguageModelCompletionError::PromptTooLarge { tokens } => {
+                assert_eq!(tokens, Some(77490));
+            }
+            _ => panic!("Expected PromptTooLarge for context_length_exceeded"),
         }
     }
 

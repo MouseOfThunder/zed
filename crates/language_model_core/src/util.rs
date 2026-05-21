@@ -41,12 +41,87 @@ fn strip_trailing_incomplete_escape(json: &str) -> &str {
 
 /// Parses a "prompt is too long: N tokens ..." message and extracts the token count.
 pub fn parse_prompt_too_long(message: &str) -> Option<u64> {
-    message
-        .strip_prefix("prompt is too long: ")?
-        .split_once(" tokens")?
-        .0
-        .parse()
-        .ok()
+    // Legacy cloud error format:
+    // "prompt is too long: 12345 tokens ..."
+    if let Some(rest) = message.strip_prefix("prompt is too long: ") {
+        if let Some(tokens) = parse_first_u64(rest) {
+            return Some(tokens);
+        }
+    }
+
+    let lower = message.to_ascii_lowercase();
+
+    // Common OpenAI-style format:
+    // "... your messages resulted in 77490 tokens"
+    if lower.contains("maximum context length")
+        && let Some(tokens) = parse_u64_after_case_insensitive(message, "resulted in")
+    {
+        return Some(tokens);
+    }
+
+    // Another common format:
+    // "... you requested 77490 tokens"
+    if let Some(tokens) = parse_u64_after_case_insensitive(message, "requested") {
+        return Some(tokens);
+    }
+
+    // vLLM-style logs / messages:
+    // "prompt_tokens=77490 ... max_tokens=65536"
+    if let Some(tokens) = parse_u64_after_case_insensitive(message, "prompt_tokens=") {
+        return Some(tokens);
+    }
+
+    // Alternative shape:
+    // "input token count (77490) exceeds max context length (65536)"
+    if let Some(tokens) = parse_u64_after_case_insensitive(message, "input token count") {
+        return Some(tokens);
+    }
+
+    None
+}
+
+/// Returns true if the message strongly indicates prompt/context-window overflow.
+pub fn is_context_window_overflow_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+
+    lower.contains("context_length_exceeded")
+        || lower.contains("prompt is too long")
+        || lower.contains("prompt too large")
+        || lower.contains("maximum context length")
+        || lower.contains("max context length")
+        || (lower.contains("context window")
+            && (lower.contains("exceed") || lower.contains("too long") || lower.contains("too large")))
+        || (lower.contains("input token count") && lower.contains("exceed"))
+        || (lower.contains("prompt_tokens=") && lower.contains("max_tokens="))
+        || (lower.contains("prompt tokens") && lower.contains("max tokens"))
+}
+
+fn parse_u64_after_case_insensitive(message: &str, marker: &str) -> Option<u64> {
+    let lower = message.to_ascii_lowercase();
+    let marker_lower = marker.to_ascii_lowercase();
+    let idx = lower.find(&marker_lower)?;
+    let rest = &message[idx + marker_lower.len()..];
+    parse_first_u64(rest)
+}
+
+fn parse_first_u64(input: &str) -> Option<u64> {
+    let bytes = input.as_bytes();
+    let mut start = None;
+
+    for (ix, byte) in bytes.iter().enumerate() {
+        if byte.is_ascii_digit() {
+            start = Some(ix);
+            break;
+        }
+    }
+
+    let start = start?;
+    let mut end = start;
+    while end < bytes.len() && bytes[end].is_ascii_digit() {
+        end += 1;
+    }
+
+    input[start..end].parse().ok()
 }
 
 #[cfg(test)]
@@ -108,5 +183,34 @@ mod tests {
 
         let delta = &text2[text1.len()..];
         assert_eq!(delta, "\n    return bar;\n}");
+    }
+
+    #[test]
+    fn test_parse_prompt_too_long_openai_max_context_message() {
+        let message =
+            "This model's maximum context length is 65536 tokens. However, your messages resulted in 77490 tokens.";
+        assert_eq!(parse_prompt_too_long(message), Some(77490));
+    }
+
+    #[test]
+    fn test_parse_prompt_too_long_vllm_style_message() {
+        let message = "request=abc prompt_tokens=77490 tokens_to_prefill=77490 max_tokens=65536";
+        assert_eq!(parse_prompt_too_long(message), Some(77490));
+    }
+
+    #[test]
+    fn test_is_context_window_overflow_message_detects_common_shapes() {
+        assert!(is_context_window_overflow_message(
+            "Error: context_length_exceeded for this request"
+        ));
+        assert!(is_context_window_overflow_message(
+            "input token count (77490) exceeds max context length (65536)"
+        ));
+        assert!(is_context_window_overflow_message(
+            "prompt_tokens=77490 max_tokens=65536"
+        ));
+        assert!(!is_context_window_overflow_message(
+            "invalid request format: missing field messages"
+        ));
     }
 }
