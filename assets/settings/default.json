@@ -1121,6 +1121,7 @@
           "move_path": true,
           "rename_symbol": true,
           "read_file": true,
+          "replace_lines": true,
           "open": true,
           "grep": true,
           "spawn_agent": true,
@@ -2357,6 +2358,7 @@
     "lmstudio": {
       "api_url": "http://localhost:1234/api/v0",
     },
+    "local_mlx": {},
     "deepseek": {
       "api_url": "https://api.deepseek.com/v1",
     },
