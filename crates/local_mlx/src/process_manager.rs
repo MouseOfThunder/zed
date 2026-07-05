@@ -2,6 +2,7 @@ use anyhow::{Context, Result, anyhow};
 use gpui::{BackgroundExecutor, Task};
 use smol::process::Child;
 use std::net::TcpListener;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use util::command::new_std_command;
@@ -82,7 +83,7 @@ impl ProcessManager {
         executor: &BackgroundExecutor,
     ) -> Task<Result<u16>> {
         let this = self.clone();
-        let server_binary = server_binary.to_string();
+        let server_binary = resolve_binary(server_binary);
         let server_args = server_args.to_vec();
         let model_name = model_name.to_string();
 
@@ -312,6 +313,32 @@ impl Drop for ProcessManager {
             let _ = child.kill();
         }
     }
+}
+
+fn resolve_binary(name: &str) -> String {
+    // If it's an absolute or relative path, use it as-is
+    if name.contains('/') {
+        return name.to_string();
+    }
+
+    // Check common bin directories (macOS app bundle has limited PATH)
+    let home = std::env::var("HOME").unwrap_or_default();
+    let search_dirs = [
+        format!("{}/.local/bin", home),
+        "/opt/homebrew/bin".to_string(),
+        "/usr/local/bin".to_string(),
+    ];
+
+    for dir in &search_dirs {
+        let path = PathBuf::from(dir).join(name);
+        if path.exists() {
+            log::info!("Resolved {} to {}", name, path.display());
+            return path.to_string_lossy().to_string();
+        }
+    }
+
+    // Fall back to the original name (hope it's in PATH)
+    name.to_string()
 }
 
 fn find_free_port() -> Result<u16> {
