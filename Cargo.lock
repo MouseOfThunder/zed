@@ -9662,6 +9662,7 @@ dependencies = [
  "language_model",
  "language_models_cloud",
  "lmstudio",
+ "local_mlx",
  "log",
  "menu",
  "mistral",
@@ -10218,6 +10219,25 @@ dependencies = [
  "schemars 1.0.4",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "local_mlx"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures 0.3.32",
+ "gpui",
+ "http_client",
+ "language_model",
+ "log",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "settings",
+ "smol",
+ "ui",
+ "util",
 ]
 
 [[package]]
@@ -22458,6 +22478,7 @@ dependencies = [
  "language_selector",
  "language_tools",
  "languages",
+ "libc",
  "line_ending_selector",
  "log",
  "markdown",

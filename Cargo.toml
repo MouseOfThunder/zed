@@ -126,6 +126,7 @@ members = [
     "crates/livekit_api",
     "crates/livekit_client",
     "crates/lmstudio",
+    "crates/local_mlx",
     "crates/lsp",
     "crates/markdown",
     "crates/markdown_preview",
@@ -382,6 +383,7 @@ line_ending_selector = { path = "crates/line_ending_selector" }
 livekit_api = { path = "crates/livekit_api" }
 livekit_client = { path = "crates/livekit_client" }
 lmstudio = { path = "crates/lmstudio" }
+local_mlx = { path = "crates/local_mlx" }
 lsp = { path = "crates/lsp" }
 markdown = { path = "crates/markdown" }
 markdown_preview = { path = "crates/markdown_preview" }

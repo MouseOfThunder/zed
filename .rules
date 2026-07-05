@@ -1,3 +1,7 @@
+# Tools
+
+* When editing files, always use the anchor-based `find`/`replace` mode of the `replace_lines` tool. The tool validates unique matches and returns a diff for confirmation. Never use `start_line`/`end_line` — line numbers shift with every edit and cause cascade failures where later edits silently corrupt the file.
+
 # Rust coding guidelines
 
 * Prioritize code correctness and clarity. Speed and efficiency are secondary priorities unless otherwise specified.

@@ -22,6 +22,7 @@ use crate::provider::cloud::CloudLanguageModelProvider;
 use crate::provider::copilot_chat::CopilotChatLanguageModelProvider;
 use crate::provider::google::GoogleLanguageModelProvider;
 use crate::provider::lmstudio::LmStudioLanguageModelProvider;
+use crate::provider::local_mlx::LocalMlxLanguageModelProvider;
 pub use crate::provider::mistral::MistralLanguageModelProvider;
 use crate::provider::ollama::OllamaLanguageModelProvider;
 use crate::provider::open_ai::OpenAiLanguageModelProvider;
@@ -263,6 +264,10 @@ fn register_language_model_providers(
             credentials_provider.clone(),
             cx,
         )),
+        cx,
+    );
+    registry.register_provider(
+        LocalMlxLanguageModelProvider::new(client.http_client(), cx),
         cx,
     );
     registry.register_provider(

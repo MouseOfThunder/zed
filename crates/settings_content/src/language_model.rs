@@ -5,6 +5,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use settings_macros::{MergeFrom, with_fallible_options};
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 #[with_fallible_options]
@@ -15,6 +16,7 @@ pub struct AllLanguageModelSettingsContent {
     pub deepseek: Option<DeepseekSettingsContent>,
     pub google: Option<GoogleSettingsContent>,
     pub lmstudio: Option<LmStudioSettingsContent>,
+    pub local_mlx: Option<LocalMlxSettingsContent>,
     pub mistral: Option<MistralSettingsContent>,
     pub ollama: Option<OllamaSettingsContent>,
     pub opencode: Option<OpenCodeSettingsContent>,
@@ -200,6 +202,28 @@ pub struct LmStudioAvailableModel {
     pub max_tokens: u64,
     pub supports_tool_calls: bool,
     pub supports_images: bool,
+}
+
+#[with_fallible_options]
+#[derive(Default, Clone, Debug, Serialize, Deserialize, PartialEq, JsonSchema, MergeFrom)]
+pub struct LocalMlxSettingsContent {
+    pub server_binary: Option<String>,
+    pub server_args: Option<Vec<String>>,
+    pub model_directory: Option<PathBuf>,
+    pub idle_timeout_seconds: Option<u64>,
+    pub available_models: Option<Vec<LocalMlxAvailableModel>>,
+}
+
+#[with_fallible_options]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom)]
+pub struct LocalMlxAvailableModel {
+    pub name: String,
+    pub display_name: Option<String>,
+    pub max_tokens: u64,
+    pub enable_thinking: Option<bool>,
+    pub repeat_penalty: Option<f32>,
+    pub top_p: Option<f32>,
+    pub top_k: Option<u32>,
 }
 
 #[with_fallible_options]
