@@ -25,7 +25,7 @@ After:   Start Zed → Select local MLX model in popup → Zed manages everythin
 │                                      │                   │
 │  ┌───────────────────────────────────▼────────────────┐ │
 │  │ ProcessManager (new)                               │ │
-│  │  • Spawn: uvx mlx-llm serve --model X --port {P}  │ │
+│  │  • Spawn: mlx_lm.server --model X --port {P} --host 127.0.0.1
 │  │  • Health-check: GET /health → 200                 │ │
 │  │  • Graceful shutdown: SIGTERM → SIGKILL            │ │
 │  │  • Idle timeout: stop after 5 min inactivity       │ │

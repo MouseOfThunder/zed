@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Crate Architecture — Zed</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f7f5f0;
+    --card: #ffffff;
+    --line: #e9e3d6;
+    --primary: #2f6f5e;
+    --text: #14171e;
+    --muted: #7c7a72;
+    --mid: #3a4256;
+  }
+  * { margin:0; padding:0; box-sizing:border-box }
+  body {
+    font-family: 'Outfit', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .container {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 64px 24px 96px;
+  }
+  h1 {
+    font-family: 'DM Serif Display', serif;
+    font-size: 2.5rem;
+    font-weight: 400;
+    letter-spacing: -0.005em;
+    color: var(--text);
+    margin-bottom: 8px;
+  }
+  .subtitle {
+    color: var(--muted);
+    font-size: 1.05rem;
+    margin-bottom: 48px;
+  }
+  h2 {
+    font-family: 'DM Serif Display', serif;
+    font-size: 1.5rem;
+    font-weight: 400;
+    color: var(--primary);
+    margin: 48px 0 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--line);
+  }
+  .arch {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin: 32px 0;
+  }
+  .layer {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 20px 24px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+    transition: box-shadow 0.2s, transform 0.2s;
+  }
+  .layer:hover {
+    box-shadow: 0 4px 16px rgba(0,0,0,0.06);
+    transform: translateY(-1px);
+  }
+  .layer-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.7rem;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--primary);
+    margin-bottom: 6px;
+  }
+  .layer-name {
+    font-weight: 600;
+    font-size: 1.1rem;
+    margin-bottom: 6px;
+  }
+  .layer-desc {
+    color: var(--muted);
+    font-size: 0.92rem;
+    line-height: 1.5;
+  }
+  .layer-deps {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: 10px;
+  }
+  .dep-tag {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.72rem;
+    background: rgba(47,111,94,0.08);
+    color: var(--primary);
+    padding: 2px 8px;
+    border-radius: 6px;
+    border: 1px solid rgba(47,111,94,0.12);
+  }
+  .flow {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .flow-card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 18px;
+    text-align: center;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.03);
+  }
+  .flow-num {
+    font-family: 'DM Serif Display', serif;
+    font-size: 2rem;
+    color: var(--primary);
+    opacity: 0.3;
+    line-height: 1;
+  }
+  .flow-title {
+    font-weight: 600;
+    margin: 6px 0 4px;
+  }
+  .flow-desc {
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+  .tools-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin: 20px 0;
+  }
+  .tool {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 0.9rem;
+  }
+  .tool-icon {
+    width: 32px; height: 32px;
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.75rem;
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+  .tool-file { background: rgba(47,111,94,0.1); color: var(--primary) }
+  .tool-search { background: rgba(59,130,246,0.1); color: #2563eb }
+  .tool-exec { background: rgba(245,158,11,0.1); color: #d97706 }
+  .tool-other { background: rgba(139,92,246,0.1); color: #7c3aed }
+  .kv {
+    display: grid;
+    grid-template-columns: 160px 1fr;
+    row-gap: 8px;
+    column-gap: 16px;
+    margin: 24px 0;
+    font-size: 0.92rem;
+  }
+  .kv dt {
+    color: var(--muted);
+    font-weight: 500;
+    border-bottom: 1px dashed var(--line);
+    padding-bottom: 6px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.8rem;
+  }
+  .kv dd {
+    margin: 0;
+    border-bottom: 1px dashed var(--line);
+    padding-bottom: 6px;
+  }
+  @media (max-width: 768px) {
+    .container { padding: 32px 16px 64px }
+    .flow { grid-template-columns: 1fr }
+    .tools-grid { grid-template-columns: 1fr }
+    .kv { grid-template-columns: 1fr }
+    h1 { font-size: 1.8rem }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>Agent Crate Architecture</h1>
+<p class="subtitle">crates/agent — Der AI-Agent-Layer von Zed</p>
+
+<h2>Layer-Stack</h2>
+<div class="arch">
+
+  <div class="layer">
+    <div class="layer-label">Entry Point</div>
+    <div class="layer-name">agent.rs — Public API &amp; Re-Exports</div>
+    <div class="layer-desc">Root-Modul. Exportiert Thread, Tools, Permissions, Templates, NativeAgentServer. Bindet Context-Server und ACP-Thread-Protokoll ein.</div>
+    <div class="layer-deps">
+      <span class="dep-tag">acp_thread</span>
+      <span class="dep-tag">context_server</span>
+      <span class="dep-tag">language_model</span>
+    </div>
+  </div>
+
+  <div class="layer">
+    <div class="layer-label">Core Runtime</div>
+    <div class="layer-name">thread.rs — Agent-Thread &amp; Turn-Loop</div>
+    <div class="layer-desc">Zentrale Laufzeit: Message-Historie, Completion-Loop, Tool-Dispatch, Compaction, Cancellation. &gt;8000 Zeilen — das Herz des Agenten.</div>
+    <div class="layer-deps">
+      <span class="dep-tag">tools</span>
+      <span class="dep-tag">tool_permissions</span>
+      <span class="dep-tag">templates</span>
+      <span class="dep-tag">sandboxing</span>
+      <span class="dep-tag">agent_settings</span>
+    </div>
+  </div>
+
+  <div class="layer">
+    <div class="layer-label">Persistence</div>
+    <div class="layer-name">db.rs — SQLite Database</div>
+    <div class="layer-desc">Speichert Threads &amp; Messages persistent via SQLite. Wird von thread_store.rs verwaltet.</div>
+    <div class="layer-deps">
+      <span class="dep-tag">sqlite</span>
+      <span class="dep-tag">acp_thread</span>
+    </div>
+  </div>
+
+  <div class="layer">
+    <div class="layer-label">Thread Management</div>
+    <div class="layer-name">thread_store.rs — Thread Store</div>
+    <div class="layer-desc">Verwaltet alle Agent-Threads: Laden, Speichern, Serialisierung. Brücke zwischen Thread-Laufzeit und DB.</div>
+    <div class="layer-deps">
+      <span class="dep-tag">db</span>
+      <span class="dep-tag">thread</span>
+    </div>
+  </div>
+
+  <div class="layer">
+    <div class="layer-label">Tools Layer</div>
+    <div class="layer-name">tools.rs — Tool Registry &amp; Feature Flags</div>
+    <div class="layer-desc">tools!-Makro registriert 23 Built-in-Tools. Feature-Flag-Gating für LSP, Rename, Subagent-Tools. Template-Generierung für Model-Schema.</div>
+    <div class="layer-deps">
+      <span class="dep-tag">feature_flags</span>
+      <span class="dep-tag">terminal_tool</span>
+      <span class="dep-tag">edit_file_tool</span>
+      <span class="dep-tag">...</span>
+    </div>
+  </div>
+
+  <div class="layer">
+    <div class="layer-label">Security</div>
+    <div class="layer-name">tool_permissions.rs — Permission Engine</div>
+    <div class="layer-desc">Hardcoded Security Rules + Regex-basierte Allow/Deny/Confirm-Matrix. Sandbox-Authorization. Symlink-Escape-Detection.</div>
+    <div class="layer-deps">
+      <span class="dep-tag">agent_settings</span>
+      <span class="dep-tag">shell_command_parser</span>
+    </div>
+  </div>
+
+  <div class="layer">
+    <div class="layer-label">Sandbox</div>
+    <div class="layer-name">sandboxing.rs — macOS Seatbelt Integration</div>
+    <div class="layer-desc">OS-Level Sandbox für Terminal-Kommandos. Feature-Flag-gesteuert. Netzwerk/FS-Write-Permission-Escalation.</div>
+    <div class="layer-deps">
+      <span class="dep-tag">feature_flags</span>
+      <span class="dep-tag">sandbox</span>
+    </div>
+  </div>
+
+  <div class="layer">
+    <div class="layer-label">Prompting</div>
+    <div class="layer-name">templates.rs + templates/ — Handlebars Templates</div>
+    <div class="layer-desc">System-Prompt, Edit-File-Prompt, Diff-Fenced-Format. Handlebars-Rendering mit Projekt-Kontext, Tool-Liste, Skills.</div>
+    <div class="layer-deps">
+      <span class="dep-tag">handlebars</span>
+      <span class="dep-tag">agent_skills</span>
+    </div>
+  </div>
+
+  <div class="layer">
+    <div class="layer-label">External Interface</div>
+    <div class="layer-name">native_agent_server.rs — ACP Server</div>
+    <div class="layer-desc">Implementiert das Agent-Client-Protocol (ACP). Verbindet Native UI mit Agent-Backend. Session-Management.</div>
+    <div class="layer-deps">
+      <span class="dep-tag">acp_thread</span>
+      <span class="dep-tag">thread_store</span>
+    </div>
+  </div>
+
+  <div class="layer">
+    <div class="layer-label">Utility</div>
+    <div class="layer-name">outline.rs + pattern_extraction.rs</div>
+    <div class="layer-desc">File-Outline-Generierung für Read-File-Tool. Pattern-Extraction für Edit-Sessions und Code-Analyse.</div>
+  </div>
+
+</div>
+
+<h2>Turn Execution Flow</h2>
+<div class="flow">
+  <div class="flow-card">
+    <div class="flow-num">1</div>
+    <div class="flow-title">Build Request</div>
+    <div class="flow-desc">System-Prompt + Messages + Tools → LanguageModelRequest. Auto-Compact-Prüfung.</div>
+  </div>
+  <div class="flow-card">
+    <div class="flow-num">2</div>
+    <div class="flow-title">Stream &amp; Dispatch</div>
+    <div class="flow-desc">LLM-Stream → Parse Tool-Calls → Permission-Check → Run Tools. Parallel für independent scopes.</div>
+  </div>
+  <div class="flow-card">
+    <div class="flow-num">3</div>
+    <div class="flow-title">Loop or End</div>
+    <div class="flow-desc">Tool-Results → nächste Iteration oder EndTurn/Refusal/MaxTokens. Retry-Logik.</div>
+  </div>
+</div>
+
+<h2>Tools (23 Built-in)</h2>
+<div class="tools-grid">
+  <div class="tool"><span class="tool-icon tool-file">F</span> <span><b>read_file</b> — Lese Dateien mit Zeilennummern</span></div>
+  <div class="tool"><span class="tool-icon tool-file">F</span> <span><b>write_file</b> — Schreibe/Überschreibe Dateien</span></div>
+  <div class="tool"><span class="tool-icon tool-file">F</span> <span><b>edit_file</b> — Fuzzy-Edit mit SEARCH/REPLACE</span></div>
+  <div class="tool"><span class="tool-icon tool-file">F</span> <span><b>delete_path</b> — Lösche Dateien/Ordner</span></div>
+  <div class="tool"><span class="tool-icon tool-file">F</span> <span><b>copy_path / move_path</b> — Kopiere/Verschiebe</span></div>
+  <div class="tool"><span class="tool-icon tool-file">F</span> <span><b>create_directory</b> — Erstelle Ordner</span></div>
+  <div class="tool"><span class="tool-icon tool-search">S</span> <span><b>grep</b> — Regex-Suche im Code</span></div>
+  <div class="tool"><span class="tool-icon tool-search">S</span> <span><b>find_path</b> — Datei-Pfad-Suche</span></div>
+  <div class="tool"><span class="tool-icon tool-search">S</span> <span><b>list_directory</b> — Ordnerinhalt auflisten</span></div>
+  <div class="tool"><span class="tool-icon tool-exec">T</span> <span><b>terminal</b> — Shell-Kommandos ausführen</span></div>
+  <div class="tool"><span class="tool-icon tool-exec">T</span> <span><b>fetch</b> — HTTP-Requests</span></div>
+  <div class="tool"><span class="tool-icon tool-other">A</span> <span><b>spawn_agent</b> — Subagent starten</span></div>
+  <div class="tool"><span class="tool-icon tool-other">A</span> <span><b>create_thread</b> — Thread erstellen</span></div>
+  <div class="tool"><span class="tool-icon tool-other">A</span> <span><b>skill</b> — Skill laden &amp; aktivieren</span></div>
+  <div class="tool"><span class="tool-icon tool-search">S</span> <span><b>diagnostics</b> — Fehler/Warnungen</span></div>
+  <div class="tool"><span class="tool-icon tool-search">S</span> <span><b>find_references</b> — Symbol-Referenzen</span></div>
+  <div class="tool"><span class="tool-icon tool-search">S</span> <span><b>go_to_definition</b> — Symbol-Definition</span></div>
+  <div class="tool"><span class="tool-icon tool-other">A</span> <span><b>get_code_actions</b> — LSP Code Actions</span></div>
+  <div class="tool"><span class="tool-icon tool-other">A</span> <span><b>apply_code_action</b> — Code Action anwenden</span></div>
+  <div class="tool"><span class="tool-icon tool-other">A</span> <span><b>rename</b> — Symbol umbenennen</span></div>
+  <div class="tool"><span class="tool-icon tool-search">S</span> <span><b>web_search</b> — Web-Suche</span></div>
+  <div class="tool"><span class="tool-icon tool-other">A</span> <span><b>list_agents_and_models</b> — Agent/Model-Auflistung</span></div>
+</div>
+
+<h2>Key Dependencies</h2>
+<dl class="kv">
+  <dt>acp_thread</dt>
+  <dd>Agent-Client-Protocol: Session, Events, Tool-Call-Updates, Retry-Status</dd>
+  <dt>language_model</dt>
+  <dd>LLM-Abstraktion: Request/Response, Completion-Stream, Token-Usage, Tool-Use</dd>
+  <dt>agent_settings</dt>
+  <dd>Profile, Auto-Compact, Tool-Permissions, Sandbox-Permissions</dd>
+  <dt>context_server</dt>
+  <dd>Externe Tools via MCP/Agent-Server-Protokoll</dd>
+  <dt>project</dt>
+  <dd>Worktree-Zugriff, Buffer-Management, File-System</dd>
+  <dt>feature_flags</dt>
+  <dd>Sandboxing, LSP-Tools, Rename, Create-Thread Feature-Gating</dd>
+  <dt>agent_skills</dt>
+  <dd>Skill-Discovery: Built-in, Global (~/.agents), Project (.agents)</dd>
+</dl>
+
+</div>
+</body>
+</html>

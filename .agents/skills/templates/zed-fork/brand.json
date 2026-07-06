@@ -1,0 +1,25 @@
+{
+  "name": "Zed",
+  "format": "A4",
+  "fonts": {
+    "heading": "DM Serif Display",
+    "body": "Outfit",
+    "mono": "JetBrains Mono"
+  },
+  "colors": {
+    "primary": "#2563eb",
+    "primary_dim": "rgba(37,99,235,0.08)",
+    "bg": "#f7f5f0",
+    "card": "#ffffff",
+    "line": "#e4e2dc",
+    "text": "#14171e",
+    "muted": "#6b7280",
+    "accent": "#10b981"
+  },
+  "logo": {
+    "src": "logo.svg",
+    "width": "100px",
+    "position": "top-left"
+  },
+  "header_footer": true
+}

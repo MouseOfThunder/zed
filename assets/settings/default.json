@@ -1158,7 +1158,33 @@
         "enable_all_context_servers": false,
         "tools": {},
       },
+      "local": {
+        "name": "Local",
+        "enable_all_context_servers": false,
+        "tools": {
+          "copy_path": true,
+          "create_directory": true,
+          "delete_path": true,
+          "diagnostics": true,
+          "edit_file": true,
+          "write_file": true,
+          "fetch": true,
+          "find_path": true,
+          "find_references": true,
+          "get_code_actions": true,
+          "go_to_definition": true,
+          "list_directory": true,
+          "move_path": true,
+          "read_file": true,
+          "replace_lines": true,
+          "open": true,
+          "grep": true,
+          "terminal": true,
+          "thinking": true,
+        },
+      },
     },
+    // Where to show notifications when the agent has either completed
     // Where to show notifications when the agent has either completed
     // its response, or else needs confirmation before it can run a
     // tool action.

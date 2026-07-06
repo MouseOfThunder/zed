@@ -78,17 +78,18 @@ impl settings::Settings for AllLanguageModelSettings {
                 available_models: lmstudio.available_models.unwrap_or_default(),
             },
             local_mlx: LocalMlxSettings {
-                server_binary: local_mlx.server_binary.unwrap_or_else(|| "uvx".into()),
+                server_binary: local_mlx
+                    .server_binary
+                    .unwrap_or_else(|| "mlx_lm.server".into()),
                 server_args: local_mlx.server_args.unwrap_or_else(|| {
                     vec![
-                        "mlx-llm".into(),
-                        "serve".into(),
-                        "--model".into(),
-                        "{model}".into(),
                         "--port".into(),
                         "{port}".into(),
+                        "--host".into(),
+                        "127.0.0.1".into(),
                     ]
                 }),
+                port: local_mlx.port.unwrap_or(8888),
                 model_directory: local_mlx.model_directory,
                 idle_timeout_seconds: local_mlx.idle_timeout_seconds.unwrap_or(300),
                 available_models: local_mlx.available_models.unwrap_or_default(),

@@ -10234,8 +10234,6 @@ dependencies = [
  "parking_lot",
  "serde",
  "serde_json",
- "settings",
- "smol",
  "ui",
  "util",
 ]

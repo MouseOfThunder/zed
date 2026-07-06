@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Zed Fork — Project Overview</title>
+        <link
+            href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+            rel="stylesheet"
+        />
+        <style>
+            @page {
+                size: A4;
+                margin: 48mm 20mm 30mm 20mm;
+                @top-left {
+                    content: element(header);
+                }
+            }
+            :root {
+                --primary: #2563eb;
+                --primary-dim: rgba(37, 99, 235, 0.08);
+                --line: #e4e2dc;
+                --text: #14171e;
+                --muted: #6b7280;
+            }
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            body {
+                font-family: "Outfit", sans-serif;
+                color: var(--text);
+                line-height: 1.6;
+            }
+            .header-el {
+                position: running(header);
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                padding-bottom: 12px;
+                border-bottom: 1px solid var(--line);
+            }
+            .header-el img {
+                width: 36px;
+                height: 36px;
+                border-radius: 8px;
+            }
+            .header-el span {
+                font-size: 0.78rem;
+                color: var(--muted);
+                font-weight: 500;
+            }
+            h1 {
+                font-family: "DM Serif Display", serif;
+                font-size: 2rem;
+                font-weight: 400;
+                color: var(--primary);
+                margin-bottom: 6px;
+            }
+            h2 {
+                font-family: "DM Serif Display", serif;
+                font-size: 1.3rem;
+                font-weight: 400;
+                color: var(--primary);
+                margin: 28px 0 10px;
+                padding-bottom: 5px;
+                border-bottom: 1px solid var(--line);
+                page-break-after: avoid;
+            }
+            p {
+                color: var(--muted);
+                margin-bottom: 10px;
+            }
+            table {
+                width: 100%;
+                border-collapse: collapse;
+                margin: 14px 0;
+                font-size: 0.85rem;
+                page-break-inside: avoid;
+            }
+            th,
+            td {
+                text-align: left;
+                padding: 8px 12px;
+                border-bottom: 1px solid var(--line);
+            }
+            th {
+                font-weight: 600;
+                color: var(--primary);
+                background: var(--primary-dim);
+            }
+            code {
+                font-family: "JetBrains Mono", monospace;
+                font-size: 0.8rem;
+                background: var(--primary-dim);
+                padding: 1px 5px;
+                border-radius: 3px;
+            }
+            .stat-grid {
+                display: grid;
+                grid-template-columns: 1fr 1fr 1fr 1fr;
+                gap: 10px;
+                margin: 16px 0;
+                page-break-inside: avoid;
+            }
+            .stat {
+                background: #f8f9fa;
+                border: 1px solid var(--line);
+                border-radius: 8px;
+                padding: 14px;
+                text-align: center;
+            }
+            .stat-val {
+                font-family: "DM Serif Display", serif;
+                font-size: 1.6rem;
+                color: var(--primary);
+                line-height: 1;
+            }
+            .stat-label {
+                font-size: 0.72rem;
+                color: var(--muted);
+                margin-top: 3px;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="header-el">
+            <img
+                src="file:///Users/arndhekermans/Projekte/zed-fork/.agents/skills/pdf/templates/zed-brand/logo.svg"
+                alt="Zed"
+            />
+            <span>Zed Fork — Project Overview</span>
+        </div>
+
+        <h1>Zed Fork — Project Overview</h1>
+        <p>Custom build of Zed with agent tool improvements, cherry-picked from mouseofthunder.</p>
+
+        <div class="stat-grid">
+            <div class="stat">
+                <div class="stat-val">235</div>
+                <div class="stat-label">Crates</div>
+            </div>
+            <div class="stat">
+                <div class="stat-val">12</div>
+                <div class="stat-label">Cherry-picks</div>
+            </div>
+            <div class="stat">
+                <div class="stat-val">17k</div>
+                <div class="stat-label">Agent LOC</div>
+            </div>
+            <div class="stat">
+                <div class="stat-val">5</div>
+                <div class="stat-label">Skills</div>
+            </div>
+        </div>
+
+        <h2>Cherry-Picked Changes</h2>
+        <table>
+            <tr>
+                <th>Commit</th>
+                <th>Description</th>
+            </tr>
+            <tr>
+                <td><code>language_model_core</code></td>
+                <td>Restore file mode + detect context overflow</td>
+            </tr>
+            <tr>
+                <td><code>agent: auto-compact</code></td>
+                <td>Auto-compact thread on PromptTooLarge</td>
+            </tr>
+            <tr>
+                <td><code>agent: fix run_command</code></td>
+                <td>Alias + robust tool input parsing</td>
+            </tr>
+            <tr>
+                <td><code>agent: serialize</code></td>
+                <td>Concurrent mutating tool calls per scope</td>
+            </tr>
+            <tr>
+                <td><code>agent: debug logging</code></td>
+                <td>Tool dispatch + streaming debug logs</td>
+            </tr>
+            <tr>
+                <td><code>open_ai: finish_reason</code></td>
+                <td>Treat "stop" as tool_calls when pending</td>
+            </tr>
+            <tr>
+                <td><code>fix: SIGPIPE</code></td>
+                <td>Prevent exit when LLM stream drops</td>
+            </tr>
+            <tr>
+                <td><code>fix: trim whitespace</code></td>
+                <td>Stringified JSON value parsing</td>
+            </tr>
+        </table>
+
+        <h2>Agent Crate Architecture</h2>
+        <table>
+            <tr>
+                <th>Module</th>
+                <th>Lines</th>
+                <th>Role</th>
+            </tr>
+            <tr>
+                <td><code>thread.rs</code></td>
+                <td>7.759</td>
+                <td>Core runtime — completion loop, tool dispatch, compaction</td>
+            </tr>
+            <tr>
+                <td><code>agent.rs</code></td>
+                <td>6.624</td>
+                <td>Public API, re-exports, context server binding</td>
+            </tr>
+            <tr>
+                <td><code>tool_permissions.rs</code></td>
+                <td>2.415</td>
+                <td>Security rules, regex allow/deny, symlink detection</td>
+            </tr>
+            <tr>
+                <td><code>tools.rs + 23 tools</code></td>
+                <td>~15k</td>
+                <td>Tool registry, feature flags, built-in tools</td>
+            </tr>
+            <tr>
+                <td><code>templates.rs</code></td>
+                <td>—</td>
+                <td>Handlebars system prompt + edit-file prompt</td>
+            </tr>
+            <tr>
+                <td><code>sandboxing.rs</code></td>
+                <td>—</td>
+                <td>macOS Seatbelt terminal sandbox</td>
+            </tr>
+        </table>
+
+        <h2>Custom Modifications</h2>
+        <table>
+            <tr>
+                <th>Change</th>
+                <th>File</th>
+            </tr>
+            <tr>
+                <td>Auto-compact disabled by default</td>
+                <td><code>assets/settings/default.json</code></td>
+            </tr>
+            <tr>
+                <td>edit_file + write_file tools set to "allow"</td>
+                <td><code>assets/settings/default.json</code></td>
+            </tr>
+            <tr>
+                <td>Fix audio_settings unwrap() panic</td>
+                <td><code>crates/audio/src/audio_settings.rs</code></td>
+            </tr>
+            <tr>
+                <td>4 new terminal tool tests</td>
+                <td><code>crates/agent/src/tests/mod.rs</code></td>
+            </tr>
+            <tr>
+                <td>Debug log script</td>
+                <td><code>script/tool-debug-log</code></td>
+            </tr>
+        </table>
+
+        <h2>Installed Skills</h2>
+        <table>
+            <tr>
+                <th>Skill</th>
+                <th>Source</th>
+                <th>Description</th>
+            </tr>
+            <tr>
+                <td><code>create-skill</code></td>
+                <td>Built-in</td>
+                <td>Create new agent skills</td>
+            </tr>
+            <tr>
+                <td><code>visual-page</code></td>
+                <td>Global</td>
+                <td>HTML visualizations, diagrams, charts</td>
+            </tr>
+            <tr>
+                <td><code>pdf</code></td>
+                <td>Global</td>
+                <td>PDF create, read, fill, merge</td>
+            </tr>
+            <tr>
+                <td><code>gpui-test</code></td>
+                <td>Project</td>
+                <td>GPUI test debugging</td>
+            </tr>
+            <tr>
+                <td><code>zed-cherry-pick</code></td>
+                <td>Project</td>
+                <td>Cherry-pick to preview/stable</td>
+            </tr>
+        </table>
+    </body>
+</html>

@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MiniMax Mavis — Skills Catalog</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f7f5f0; --card: #ffffff; --line: #e9e3d6;
+    --primary: #2f6f5e; --text: #14171e; --muted: #7c7a72;
+    --cat-doc: #2563eb; --cat-team: #7c3aed; --cat-code: #10b981;
+    --cat-ops: #f59e0b; --cat-agents: #f43f5e; --cat-feishu: #06b6d4;
+  }
+  * { margin:0; padding:0; box-sizing:border-box }
+  body { font-family:'Outfit',sans-serif; background:var(--bg); color:var(--text); line-height:1.6; }
+  .container { max-width:1100px; margin:0 auto; padding:64px 24px 96px; }
+  h1 { font-family:'DM Serif Display',serif; font-size:2.8rem; font-weight:400; letter-spacing:-0.005em; margin-bottom:6px; }
+  .sub { color:var(--muted); font-size:1.05rem; margin-bottom:8px; }
+  .counts { color:var(--muted); font-size:0.85rem; margin-bottom:40px; }
+  h2 { font-family:'DM Serif Display',serif; font-size:1.4rem; font-weight:400; color:var(--primary); margin:48px 0 16px; padding-bottom:6px; border-bottom:1px solid var(--line); }
+  .skills { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .skill {
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:16px 20px; transition:box-shadow 0.15s,transform 0.15s;
+  }
+  .skill:hover { box-shadow:0 4px 16px rgba(0,0,0,0.05); transform:translateY(-1px); }
+  .skill-name { font-weight:600; font-size:0.95rem; margin-bottom:4px; display:flex; align-items:center; gap:8px; }
+  .skill-cat {
+    font-family:'JetBrains Mono',monospace; font-size:0.65rem; font-weight:500;
+    padding:2px 7px; border-radius:5px; text-transform:uppercase; letter-spacing:0.04em;
+    white-space:nowrap;
+  }
+  .cat-doc { background:rgba(37,99,235,0.08); color:#2563eb }
+  .cat-team { background:rgba(124,58,237,0.08); color:#7c3aed }
+  .cat-code { background:rgba(16,185,129,0.08); color:#10b981 }
+  .cat-ops { background:rgba(245,158,11,0.08); color:#d97706 }
+  .cat-agents { background:rgba(244,63,94,0.08); color:#f43f5e }
+  .cat-feishu { background:rgba(6,182,212,0.08); color:#0891b2 }
+  .skill-desc { font-size:0.85rem; color:var(--muted); line-height:1.45; }
+  .skill-badge { font-size:0.65rem; color:var(--muted); font-family:'JetBrains Mono',monospace; }
+  .legend { display:flex; gap:16px; flex-wrap:wrap; margin-bottom:28px; font-size:0.82rem; color:var(--muted); }
+  .legend span { display:flex; align-items:center; gap:5px; }
+  .legend-dot { width:10px; height:10px; border-radius:3px; }
+  @media (max-width:768px) { .skills { grid-template-columns:1fr } h1 { font-size:2rem } }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>MiniMax Mavis Skills</h1>
+<p class="sub">21 skills aus ~/.minimax — die komplette Skill-Plattform</p>
+<p class="counts">18 built-in + 1 internal + 2 agent-specific</p>
+
+<div class="legend">
+  <span><span class="legend-dot" style="background:var(--cat-code)"></span> Coding</span>
+  <span><span class="legend-dot" style="background:var(--cat-doc)"></span> Documents</span>
+  <span><span class="legend-dot" style="background:var(--cat-team)"></span> Team / Meta</span>
+  <span><span class="legend-dot" style="background:var(--cat-ops)"></span> Operations</span>
+  <span><span class="legend-dot" style="background:var(--cat-agents)"></span> Agent Framework</span>
+  <span><span class="legend-dot" style="background:var(--cat-feishu)"></span> Feishu/Lark</span>
+</div>
+
+<h2>📦 Documents &amp; Output</h2>
+<div class="skills">
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-doc">doc</span> pdf</div>
+    <div class="skill-desc">Unified PDF — create, reformat, fill forms, read/extract/OCR, LaTeX thesis, Markdown→PDF. 21 docs + 26 Python scripts + 12 templates.</div>
+    <div class="skill-badge">281 lines · v3.0</div>
+  </div>
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-doc">doc</span> pptx</div>
+    <div class="skill-desc">PowerPoint — read, create, edit .pptx/.ppt. Parse, summarize, extract content, inspect themes/layouts, create slides.</div>
+  </div>
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-doc">doc</span> docx</div>
+    <div class="skill-desc">Unified DOCX — create, template-apply, edit/fill, read, repair, compare Word documents.</div>
+  </div>
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-doc">doc</span> xlsx</div>
+    <div class="skill-desc">Spreadsheet — read, edit, create, convert .xlsx/.xlsm/.csv/.tsv. Full spreadsheet manipulation.</div>
+    <div class="skill-badge">499 lines · longest skill</div>
+  </div>
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-doc">doc</span> visual-page</div>
+    <div class="skill-desc">Create visual HTML pages — diagrams, flowcharts, data comparisons, timelines. Design-first with anti-slop checklist.</div>
+    <div class="skill-badge">192 lines · Zed-adaptiert</div>
+  </div>
+</div>
+
+<h2>🧠 Research &amp; Planning</h2>
+<div class="skills">
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-code">code</span> deep-research</div>
+    <div class="skill-desc">Five-step Deep Research pipeline via Mavis Team Engine. File-input based, continuable across follow-up questions.</div>
+    <div class="skill-badge">296 lines</div>
+  </div>
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-code">code</span> plan-mode</div>
+    <div class="skill-desc">Plan before execution. Trigger on ambiguity, multiple approaches, or user wants to discuss first. Skips trivial tasks.</div>
+  </div>
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-code">code</span> x-link-reader</div>
+    <div class="skill-desc">Read X/Twitter content from links. Extract tweet content, thread context, profile info.</div>
+  </div>
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-code">code</span> llm-call</div>
+    <div class="skill-desc">Direct LLM model call via local Python script. Raw model access, prompt testing, provider comparison.</div>
+    <div class="skill-badge">453-line Python script</div>
+  </div>
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-ops">ops</span> mavis-browser</div>
+    <div class="skill-desc">Drive user's real Chrome browser (logged-in sites, cookies, extensions) via CLI. Default browser automation.</div>
+  </div>
+</div>
+
+<h2>🪶 Feishu / Lark Suite (16 skills)</h2>
+<div class="skills">
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-feishu">lark</span> lark-tools (router)</div>
+    <div class="skill-desc">Entry point for all Lark/Feishu tools. Routes to domain-specific sub-skills. Manages auth and onboarding.</div>
+  </div>
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-feishu">lark</span> lark-mail</div>
+    <div class="skill-desc">Email — draft, compose, send, reply, forward, search, manage folders/labels/contacts/attachments/rules.</div>
+    <div class="skill-badge">483 lines</div>
+  </div>
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-feishu">lark</span> lark-calendar</div>
+    <div class="skill-desc">Calendar — schedule meetings, free/busy, room find, RSVP, agenda, suggestions.</div>
+  </div>
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-feishu">lark</span> lark-doc</div>
+    <div class="skill-desc">Documents — create, fetch, update, search, media insert/preview/download, whiteboard update.</div>
+  </div>
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-feishu">lark</span> lark-drive</div>
+    <div class="skill-desc">Drive — upload, download, delete, move, import, export, create shortcuts/folders, comments, reactions.</div>
+  </div>
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-feishu">lark</span> lark-sheets</div>
+    <div class="skill-desc">Spreadsheets — read, write, format, manage sheets and data in Lark Sheets.</div>
+  </div>
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-feishu">lark</span> lark-slides</div>
+    <div class="skill-desc">Presentations — create and edit Lark Slides with content and layout management.</div>
+  </div>
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-feishu">lark</span> lark-wiki</div>
+    <div class="skill-desc">Wiki — create nodes, move pages, manage wiki knowledge base.</div>
+  </div>
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-feishu">lark</span> lark-base</div>
+    <div class="skill-desc">Database — manage Lark Base tables, records, fields, views.</div>
+  </div>
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-feishu">lark</span> lark-vc + lark-im</div>
+    <div class="skill-desc">Video conferencing (notes, search, recordings) + Instant messaging.</div>
+  </div>
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-feishu">lark</span> lark-contact + lark-task</div>
+    <div class="skill-desc">User directory (search/get users) + Task management.</div>
+  </div>
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-feishu">lark</span> lark-approval + lark-attendance</div>
+    <div class="skill-desc">Approval workflows + Attendance tracking.</div>
+  </div>
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-feishu">lark</span> lark-event + lark-minutes</div>
+    <div class="skill-desc">Event management + Meeting minutes (search, download).</div>
+  </div>
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-feishu">lark</span> lark-openapi-explorer</div>
+    <div class="skill-desc">Explore and test Lark OpenAPI endpoints interactively.</div>
+  </div>
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-feishu">lark</span> lark-skill-maker + shared</div>
+    <div class="skill-desc">Create Lark-specific skills + Shared utilities and auth helpers.</div>
+  </div>
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-feishu">lark</span> lark-whiteboard + workflow-standup</div>
+    <div class="skill-desc">Whiteboard management + Automated standup report workflow.</div>
+  </div>
+</div>
+
+<h2>🤖 Agent Framework</h2>
+<div class="skills">
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-agents">agent</span> mavis</div>
+    <div class="skill-desc">Mavis runtime entry point. Configure/use Mavis, manage agents/sessions/memory/hooks/crons, IM routing, skill management.</div>
+  </div>
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-agents">agent</span> mavis-team</div>
+    <div class="skill-desc">Run parallel team plans AND create agents. Splits into parallel tracks with verifier judging each deliverable.</div>
+    <div class="skill-badge">405 lines · agent-specific</div>
+  </div>
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-agents">agent</span> mavis-doctor</div>
+    <div class="skill-desc">Debug sessions/agents/daemon. Session ID mapping (mvs_↔ses_), SQLite queries, log inspection, root-cause analysis.</div>
+    <div class="skill-badge">agent-specific</div>
+  </div>
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-agents">agent</span> init</div>
+    <div class="skill-desc">Bootstrap a coding project — generate AGENTS.md + .harness/ directory with multi-agent team. Cold-start in git workspace.</div>
+  </div>
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-agents">agent</span> create-agent</div>
+    <div class="skill-desc">Create one agent on disk. Called by mavis-team or init. Two output paths: global (~/.mavis/agents/) or project (.harness/reins/).</div>
+  </div>
+</div>
+
+<h2>🔧 Operations &amp; Meta</h2>
+<div class="skills">
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-ops">ops</span> skill-creator</div>
+    <div class="skill-desc">Create a new skill with eval-driven loop. Turn repeated workflows into reusable skills.</div>
+  </div>
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-ops">ops</span> skill-refiner</div>
+    <div class="skill-desc">Refine existing skills with evidence-driven minimal patches. Fix wrong instructions, outdated steps.</div>
+  </div>
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-ops">ops</span> skill-evolution</div>
+    <div class="skill-desc">Shape skill set as you work. When to file a skill signal (wrong/missing) vs skill creation request.</div>
+  </div>
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-ops">ops</span> skill-evolve-nightly</div>
+    <div class="skill-desc">Nightly batch skill maintenance. Reads signals/proposals, plans which skills to create/refine via team engine.</div>
+    <div class="skill-badge">368 lines · daemon-managed</div>
+  </div>
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-ops">ops</span> mcp-cli</div>
+    <div class="skill-desc">MCP management — add/configure servers, authenticate, sync skills, browse and call tools.</div>
+  </div>
+  <div class="skill">
+    <div class="skill-name"><span class="skill-cat cat-ops">ops</span> mcp-onboarding</div>
+    <div class="skill-desc">Onboard new MCP integration — collect config, handle auth, sync skills without manual setup commands.</div>
+  </div>
+</div>
+
+</div>
+</body>
+</html>

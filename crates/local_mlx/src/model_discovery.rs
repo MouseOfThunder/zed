@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use futures::AsyncReadExt as _;
 use http_client::{AsyncBody, HttpClient, Method, Request};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct ModelInfo {
@@ -10,6 +10,7 @@ pub struct ModelInfo {
     pub max_tokens: u64,
     pub supports_tools: bool,
     pub supports_images: bool,
+    pub local_path: Option<PathBuf>,
 }
 
 /// Discover available models from the running mlx-llm server.
@@ -71,6 +72,7 @@ pub async fn discover_models_via_api(
                 max_tokens: 32768,
                 supports_tools: true,
                 supports_images: false,
+                local_path: None,
             }
         })
         .collect();
@@ -113,16 +115,18 @@ pub fn discover_models_from_cache() -> Result<Vec<ModelInfo>> {
                 continue;
             }
 
-            // Find the first snapshot that has a config.json
-            let config_path = find_config_json(&snapshots_dir);
+            // Find the first snapshot that has both config.json and model weights
+            let (config_path, safetensors_path) = find_model_files(&snapshots_dir);
+
+            // Require at least one safetensors file — config.json alone means
+            // the model was never fully downloaded.
+            let has_model = safetensors_path.is_some();
 
             // Read config.json for model metadata
             let max_tokens = config_path
                 .as_ref()
                 .and_then(|p| read_context_length(p).ok())
                 .unwrap_or(32768);
-
-            let has_model = config_path.is_some();
 
             if has_model {
                 let id = dir_name
@@ -136,12 +140,17 @@ pub fn discover_models_from_cache() -> Result<Vec<ModelInfo>> {
                     .unwrap_or(&id)
                     .to_string();
 
+                let local_path = safetensors_path
+                    .as_ref()
+                    .and_then(|p| p.parent().map(|p| p.to_path_buf()));
+
                 models.push(ModelInfo {
                     id,
                     display_name,
                     max_tokens,
                     supports_tools: true,
                     supports_images: false,
+                    local_path,
                 });
             }
         }
@@ -150,15 +159,38 @@ pub fn discover_models_from_cache() -> Result<Vec<ModelInfo>> {
     Ok(models)
 }
 
-fn find_config_json(snapshots_dir: &Path) -> Option<std::path::PathBuf> {
-    let entries = std::fs::read_dir(snapshots_dir).ok()?;
+fn find_model_files(
+    snapshots_dir: &Path,
+) -> (Option<std::path::PathBuf>, Option<std::path::PathBuf>) {
+    let entries = match std::fs::read_dir(snapshots_dir) {
+        Ok(entries) => entries,
+        Err(_) => return (None, None),
+    };
+    let mut config_path = None;
+    let mut safetensors_path = None;
     for entry in entries.filter_map(|e| e.ok()) {
-        let config = entry.path().join("config.json");
-        if config.exists() {
-            return Some(config);
+        if config_path.is_none() {
+            let config = entry.path().join("config.json");
+            if config.exists() {
+                config_path = Some(config);
+            }
+        }
+        if safetensors_path.is_none() {
+            if let Ok(files) = std::fs::read_dir(entry.path()) {
+                for file in files.filter_map(|f| f.ok()) {
+                    let name = file.file_name().to_string_lossy().to_string();
+                    if name.ends_with(".safetensors") {
+                        safetensors_path = Some(file.path());
+                        break;
+                    }
+                }
+            }
+        }
+        if config_path.is_some() && safetensors_path.is_some() {
+            break;
         }
     }
-    None
+    (config_path, safetensors_path)
 }
 
 fn read_context_length(config_path: &Path) -> Result<u64> {

@@ -1,11 +1,11 @@
 use anyhow::{Context, Result, anyhow};
 use gpui::{BackgroundExecutor, Task};
-use smol::process::Child;
-use std::net::TcpListener;
+use std::io::Read;
+use std::net::TcpStream;
 use std::path::PathBuf;
+use std::process::{Child, Command as StdCommand, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use util::command::new_std_command;
 
 use parking_lot::Mutex as ParkingMutex;
 
@@ -16,8 +16,7 @@ pub struct ProcessManager {
 struct Inner {
     state: ProcessState,
     child: Option<Child>,
-    port: Option<u16>,
-    current_model: Option<String>,
+    port: u16,
     last_used: Instant,
 }
 
@@ -30,25 +29,19 @@ enum ProcessState {
 }
 
 impl ProcessManager {
-    pub fn new() -> Self {
+    pub fn new(port: u16) -> Self {
         Self {
             inner: Arc::new(ParkingMutex::new(Inner {
                 state: ProcessState::Stopped,
                 child: None,
-                port: None,
-                current_model: None,
+                port,
                 last_used: Instant::now(),
             })),
         }
     }
 
-    pub fn port(&self) -> Option<u16> {
-        let inner = self.inner.lock();
-        if inner.state == ProcessState::Running {
-            inner.port
-        } else {
-            None
-        }
+    pub fn port(&self) -> u16 {
+        self.inner.lock().port
     }
 
     pub fn is_running(&self) -> bool {
@@ -57,7 +50,7 @@ impl ProcessManager {
             return false;
         }
         if let Some(ref mut child) = inner.child {
-            child.try_status().map(|s| s.is_none()).unwrap_or(false)
+            child.try_wait().map(|s| s.is_none()).unwrap_or(false)
         } else {
             false
         }
@@ -67,50 +60,50 @@ impl ProcessManager {
         self.inner.lock().state == ProcessState::Starting
     }
 
-    pub fn current_model(&self) -> Option<String> {
-        self.inner.lock().current_model.clone()
-    }
-
     pub fn touch(&self) {
         self.inner.lock().last_used = Instant::now();
     }
 
+    /// Start a single mlx_lm.server process on the configured port.
+    /// The server handles model discovery and loading internally —
+    /// no model argument needed. Just start it once and use it for
+    /// all local MLX requests.
     pub fn start(
         self: &Arc<Self>,
         server_binary: &str,
         server_args: &[String],
-        model_name: &str,
+        model: Option<&str>,
         executor: &BackgroundExecutor,
     ) -> Task<Result<u16>> {
         let this = self.clone();
         let server_binary = resolve_binary(server_binary);
         let server_args = server_args.to_vec();
-        let model_name = model_name.to_string();
+        let port = self.port();
+        let model = model.map(|m| m.to_string());
 
         executor.spawn(async move {
-            let port = find_free_port()?;
-
             let args: Vec<String> = server_args
                 .iter()
                 .map(|arg| {
                     arg.replace("{port}", &port.to_string())
-                        .replace("{model}", &model_name)
+                        .replace("{model}", model.as_deref().unwrap_or(""))
                 })
                 .collect();
 
             log::info!(
-                "Starting local MLX server: {} {}",
+                "Starting local MLX server on port {}: {} {}",
+                port,
                 server_binary,
                 args.join(" ")
             );
 
-            let mut cmd = new_std_command(&server_binary);
+            let mut cmd = StdCommand::new(&server_binary);
             cmd.args(&args)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped());
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
 
-            let child = smol::process::Command::from(cmd)
+            let child = cmd
                 .spawn()
                 .with_context(|| format!("failed to spawn {} {}", server_binary, args.join(" ")))?;
 
@@ -118,13 +111,12 @@ impl ProcessManager {
                 let mut inner = this.inner.lock();
                 inner.state = ProcessState::Starting;
                 inner.child = Some(child);
-                inner.port = Some(port);
-                inner.current_model = Some(model_name.clone());
                 inner.last_used = Instant::now();
             }
 
-            let max_attempts = 30u32;
-            let base_delay_ms = 100u64;
+            // Health check: TCP connect with backoff
+            let max_attempts = 15u32;
+            let base_delay_ms = 150u64;
 
             for attempt in 0..max_attempts {
                 {
@@ -133,43 +125,90 @@ impl ProcessManager {
                         return Err(anyhow!("Server start was cancelled"));
                     }
                     if let Some(ref mut child) = inner.child {
-                        if child.try_status()?.is_some() {
+                        if child.try_wait()?.is_some() {
+                            let stderr_output = read_stderr(&mut inner);
                             inner.state = ProcessState::Stopped;
                             inner.child = None;
-                            return Err(anyhow!(
-                                "Server process exited unexpectedly during startup"
-                            ));
+                            let mut msg =
+                                "Server process exited unexpectedly during startup".to_string();
+                            if !stderr_output.is_empty() {
+                                msg.push_str(": ");
+                                msg.push_str(&stderr_output);
+                            }
+                            return Err(anyhow!("{}", msg));
                         }
                     }
                 }
 
-                match smol::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await {
+                let addr = format!("127.0.0.1:{}", port);
+                match TcpStream::connect_timeout(
+                    &addr
+                        .parse()
+                        .map_err(|e| anyhow!("Invalid address: {}", e))?,
+                    Duration::from_secs(2),
+                ) {
                     Ok(_) => {
+                        std::thread::sleep(Duration::from_millis(500));
+                        {
+                            let mut inner = this.inner.lock();
+                            if let Some(ref mut child) = inner.child {
+                                if child.try_wait()?.is_some() {
+                                    let stderr_output = read_stderr(&mut inner);
+                                    inner.state = ProcessState::Stopped;
+                                    inner.child = None;
+                                    let mut msg =
+                                        "Server process exited during startup".to_string();
+                                    if !stderr_output.is_empty() {
+                                        msg.push_str(": ");
+                                        msg.push_str(&stderr_output);
+                                    }
+                                    return Err(anyhow!("{}", msg));
+                                }
+                            }
+                        }
                         let mut inner = this.inner.lock();
                         inner.state = ProcessState::Running;
-                        log::info!(
-                            "Local MLX server ready on port {} (model: {})",
-                            port,
-                            model_name
-                        );
+                        log::info!("Local MLX server ready on port {}", port,);
                         return Ok(port);
                     }
                     Err(_) => {}
                 }
 
-                let delay_ms = base_delay_ms * 2u64.pow(attempt.min(5));
-                smol::Timer::after(Duration::from_millis(delay_ms)).await;
+                let delay_ms = if attempt < 5 {
+                    base_delay_ms * 2u64.pow(attempt)
+                } else {
+                    2000u64
+                };
+                std::thread::sleep(Duration::from_millis(delay_ms));
             }
 
-            let mut inner = this.inner.lock();
-            inner.state = ProcessState::Stopped;
-            if let Some(mut child) = inner.child.take() {
+            let (stderr_output, child_to_kill) = {
+                let mut inner = this.inner.lock();
+                inner.state = ProcessState::Stopping;
+                let stderr_output = read_stderr(&mut inner);
+                let child_to_kill = inner.child.take();
+                (stderr_output, child_to_kill)
+            };
+
+            if let Some(mut child) = child_to_kill {
                 let _ = child.kill();
+                let _ = child.wait();
             }
-            Err(anyhow!(
+
+            {
+                let mut inner = this.inner.lock();
+                inner.state = ProcessState::Stopped;
+            }
+
+            let mut msg = format!(
                 "Server did not become healthy after {} attempts",
                 max_attempts
-            ))
+            );
+            if !stderr_output.is_empty() {
+                msg.push_str(": ");
+                msg.push_str(&stderr_output);
+            }
+            Err(anyhow!("{}", msg))
         })
     }
 
@@ -189,75 +228,19 @@ impl ProcessManager {
 
                 let start = Instant::now();
                 while start.elapsed() < Duration::from_secs(5) {
-                    if child.try_status().map(|s| s.is_some()).unwrap_or(true) {
+                    if child.try_wait().map(|s| s.is_some()).unwrap_or(true) {
                         break;
                     }
-                    smol::Timer::after(Duration::from_millis(200)).await;
+                    std::thread::sleep(Duration::from_millis(200));
                 }
             }
 
             let mut inner = this.inner.lock();
             inner.state = ProcessState::Stopped;
-            inner.port = None;
-            inner.current_model = None;
             inner.last_used = Instant::now();
             log::info!("Local MLX server stopped");
             Ok(())
         })
-    }
-
-    pub fn ensure_model(
-        self: &Arc<Self>,
-        server_binary: &str,
-        server_args: &[String],
-        model_name: &str,
-        executor: &BackgroundExecutor,
-    ) -> Task<Result<u16>> {
-        let needs_restart = {
-            let inner = self.inner.lock();
-            inner.state == ProcessState::Running
-                && inner.current_model.as_deref() != Some(model_name)
-        };
-
-        if needs_restart {
-            let this = self.clone();
-            let server_binary = server_binary.to_string();
-            let server_args = server_args.to_vec();
-            let model_name = model_name.to_string();
-            let exec = executor.clone();
-
-            executor.spawn(async move {
-                let child_to_kill = {
-                    let mut inner = this.inner.lock();
-                    inner.state = ProcessState::Stopping;
-                    inner.current_model = None;
-                    inner.child.take()
-                };
-
-                if let Some(mut child) = child_to_kill {
-                    log::info!("Restarting local MLX server for model change...");
-                    let _ = child.kill();
-                    smol::Timer::after(Duration::from_millis(500)).await;
-                }
-
-                {
-                    let mut inner = this.inner.lock();
-                    inner.state = ProcessState::Stopped;
-                    inner.port = None;
-                }
-
-                this.start(&server_binary, &server_args, &model_name, &exec)
-                    .await
-            })
-        } else if !self.is_running() && !self.is_starting() {
-            self.start(server_binary, server_args, model_name, executor)
-        } else if self.is_starting() {
-            Task::ready(Err(anyhow!(
-                "Local MLX server is still starting up. Please wait a moment and retry."
-            )))
-        } else {
-            Task::ready(Ok(self.port().unwrap_or(0)))
-        }
     }
 
     pub fn spawn_idle_watcher(
@@ -269,7 +252,7 @@ impl ProcessManager {
 
         executor.spawn(async move {
             loop {
-                smol::Timer::after(Duration::from_secs(30)).await;
+                std::thread::sleep(Duration::from_secs(30));
 
                 let should_stop = {
                     let inner = this.inner.lock();
@@ -286,14 +269,12 @@ impl ProcessManager {
 
                     if let Some(mut child) = child_to_kill {
                         let _ = child.kill();
-                        smol::Timer::after(Duration::from_secs(5)).await;
-                        let _ = child.try_status();
+                        std::thread::sleep(Duration::from_secs(5));
+                        let _ = child.try_wait();
                     }
 
                     let mut inner = this.inner.lock();
                     inner.state = ProcessState::Stopped;
-                    inner.port = None;
-                    inner.current_model = None;
                     inner.last_used = Instant::now();
                     return;
                 }
@@ -315,33 +296,42 @@ impl Drop for ProcessManager {
     }
 }
 
+fn read_stderr(inner: &mut Inner) -> String {
+    inner
+        .child
+        .as_mut()
+        .and_then(|c| c.stderr.take())
+        .map(|mut stderr| {
+            let mut buf = String::new();
+            let _ = stderr.read_to_string(&mut buf);
+            buf
+        })
+        .unwrap_or_default()
+}
+
 fn resolve_binary(name: &str) -> String {
-    // If it's an absolute or relative path, use it as-is
     if name.contains('/') {
         return name.to_string();
     }
 
-    // Check common bin directories (macOS app bundle has limited PATH)
     let home = std::env::var("HOME").unwrap_or_default();
-    let search_dirs = [
-        format!("{}/.local/bin", home),
-        "/opt/homebrew/bin".to_string(),
-        "/usr/local/bin".to_string(),
+    let candidates = [
+        format!("{}/.local/bin/{}", home, name),
+        format!("{}/miniforge3/bin/{}", home, name),
+        format!("{}/miniconda3/bin/{}", home, name),
+        format!("{}/anaconda3/bin/{}", home, name),
+        format!("/opt/homebrew/bin/{}", name),
+        format!("/usr/local/bin/{}", name),
     ];
 
-    for dir in &search_dirs {
-        let path = PathBuf::from(dir).join(name);
+    for candidate in &candidates {
+        let path = PathBuf::from(candidate);
         if path.exists() {
             log::info!("Resolved {} to {}", name, path.display());
             return path.to_string_lossy().to_string();
         }
     }
 
-    // Fall back to the original name (hope it's in PATH)
+    log::info!("Using {} from PATH", name);
     name.to_string()
-}
-
-fn find_free_port() -> Result<u16> {
-    let listener = TcpListener::bind("127.0.0.1:0").context("failed to bind to find free port")?;
-    Ok(listener.local_addr()?.port())
 }

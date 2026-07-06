@@ -3,8 +3,9 @@ use crate::{
     DbLanguageModel, DbThread, DeletePathTool, DiagnosticsTool, EditFileTool, FetchTool,
     FindPathTool, FindReferencesTool, GetCodeActionsTool, GoToDefinitionTool, GrepTool,
     ListDirectoryTool, MovePathTool, OpenTool, ProjectSnapshot, ReadFileTool, RenameTool,
-    SpawnAgentTool, SystemPromptTemplate, Templates, TerminalTool, ToolPermissionDecision,
-    UpdatePlanTool, WebSearchTool, WriteFileTool, decide_permission_from_settings,
+    ReplaceLinesTool, SpawnAgentTool, SystemPromptTemplate, Templates, TerminalTool,
+    ToolPermissionDecision, UpdatePlanTool, WebSearchTool, WriteFileTool,
+    decide_permission_from_settings,
 };
 use acp_thread::{MentionUri, UserMessageId};
 use action_log::ActionLog;
@@ -1599,6 +1600,7 @@ impl Thread {
             self.action_log.clone(),
             language_registry.clone(),
         ));
+        self.add_tool(ReplaceLinesTool::new(self.project.clone()));
         self.add_tool(WriteFileTool::new(
             self.project.clone(),
             cx.weak_entity(),
@@ -2102,7 +2104,10 @@ impl Thread {
             // tool execution, which could cause deadlocks when tools spawn subagents
             // that need their own permits.
             drop(events);
-            log::info!("Stream dropped, waiting for {} tool result(s)", tool_results.len() + early_tool_results.len());
+            log::info!(
+                "Stream dropped, waiting for {} tool result(s)",
+                tool_results.len() + early_tool_results.len()
+            );
 
             // Drop streaming tool input senders that never received their final input.
             // This prevents deadlock when the LLM stream ends (e.g. because of an error)
@@ -2139,15 +2144,14 @@ impl Thread {
             }
 
             if let Some(error) = error {
-                let compacted_after_prompt_too_large = if matches!(
-                    error,
-                    LanguageModelCompletionError::PromptTooLarge { .. }
-                ) && attempt == 0
-                {
-                    Self::compact_thread_for_prompt_too_large(this, cx).await?
-                } else {
-                    false
-                };
+                let compacted_after_prompt_too_large =
+                    if matches!(error, LanguageModelCompletionError::PromptTooLarge { .. })
+                        && attempt == 0
+                    {
+                        Self::compact_thread_for_prompt_too_large(this, cx).await?
+                    } else {
+                        false
+                    };
 
                 attempt += 1;
                 let retry = this.update(cx, |this, cx| {
@@ -2228,7 +2232,9 @@ impl Thread {
             return Ok(false);
         };
 
-        let compacted = this.update(cx, |this, cx| this.compact_history_with_summary(summary, cx))?;
+        let compacted = this.update(cx, |this, cx| {
+            this.compact_history_with_summary(summary, cx)
+        })?;
         Ok(compacted)
     }
 
@@ -2496,7 +2502,8 @@ impl Thread {
                 if let Some(sender) = running_turn.streaming_tool_inputs.get_mut(&tool_use.id) {
                     log::trace!(
                         "Forwarding partial input to streaming tool {} (id={})",
-                        tool_use.name, tool_use.id
+                        tool_use.name,
+                        tool_use.id
                     );
                     sender.send_partial(tool_use.input);
                     return None;
@@ -2527,7 +2534,8 @@ impl Thread {
                 // the tool call JSON is fully assembled.
                 log::trace!(
                     "Ignoring partial chunk for non-streaming tool {} (id={})",
-                    tool_use.name, tool_use.id
+                    tool_use.name,
+                    tool_use.id
                 );
                 return None;
             }
@@ -4849,9 +4857,7 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_tool_input_deserialization_coerces_stringified_numbers(
-        _cx: &mut TestAppContext,
-    ) {
+    async fn test_tool_input_deserialization_coerces_stringified_numbers(_cx: &mut TestAppContext) {
         let parsed: NumericToolInput = deserialize_tool_input_value(json!({
             "timeout_ms": "120000",
             "nested": {
@@ -4865,9 +4871,7 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_tool_input_deserialization_preserves_valid_strings(
-        _cx: &mut TestAppContext,
-    ) {
+    async fn test_tool_input_deserialization_preserves_valid_strings(_cx: &mut TestAppContext) {
         let parsed: StringToolInput = deserialize_tool_input_value(json!({
             "command": "120000"
         }))

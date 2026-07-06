@@ -142,6 +142,7 @@ impl AgentTool for ReplaceLinesTool {
         }
     }
 
+    #[allow(clippy::redundant_clone)]
     fn run(
         self: Arc<Self>,
         input: ToolInput<Self::Input>,
@@ -294,6 +295,7 @@ fn format_diff(old_text: &str, new_text: &str) -> String {
     diff
 }
 
+#[allow(clippy::redundant_clone)]
 async fn run_find_replace(
     project: &Entity<Project>,
     project_path: &project::ProjectPath,
@@ -314,14 +316,14 @@ async fn run_find_replace(
     buffer
         .update(cx, |buffer, cx| {
             let snapshot = buffer.text_snapshot();
-            let full_text: String = snapshot.text().to_string();
+            let full_text: String = snapshot.text();
             let matches = find_matches(&full_text, find, input.around.as_deref());
             if matches.is_empty() {
                 return Err(format!(
                     "No match found for '{}'{} in {}",
                     find,
-                    if input.around.is_some() {
-                        format!(" with around '{}'", input.around.as_ref().unwrap())
+                    if let Some(ref around) = input.around {
+                        format!(" with around '{}'", around)
                     } else {
                         String::new()
                     },

@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>{{TITLE}}</title>
+        <link
+            href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+            rel="stylesheet"
+        />
+        <style>
+            @page {
+                size: A4;
+                margin: 48mm 20mm 30mm 20mm;
+                @top-left {
+                    content: element(pageHeader);
+                }
+            }
+            :root {
+                --primary: #2563eb;
+                --primary-dim: rgba(37, 99, 235, 0.08);
+                --line: #e4e2dc;
+                --text: #14171e;
+                --muted: #6b7280;
+            }
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            body {
+                font-family: "Outfit", sans-serif;
+                color: var(--text);
+                line-height: 1.6;
+            }
+            .header {
+                position: running(pageHeader);
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                padding-bottom: 12px;
+                border-bottom: 1px solid var(--line);
+                margin-bottom: 28px;
+            }
+            .header img {
+                width: 36px;
+                height: 36px;
+                border-radius: 8px;
+            }
+            .header span {
+                font-size: 0.78rem;
+                color: var(--muted);
+                font-weight: 500;
+            }
+            h1 {
+                font-family: "DM Serif Display", serif;
+                font-size: 2rem;
+                font-weight: 400;
+                color: var(--primary);
+                margin-bottom: 6px;
+            }
+            h2 {
+                font-family: "DM Serif Display", serif;
+                font-size: 1.3rem;
+                font-weight: 400;
+                color: var(--primary);
+                margin: 28px 0 10px;
+                padding-bottom: 5px;
+                border-bottom: 1px solid var(--line);
+                page-break-after: avoid;
+            }
+            h3 {
+                font-size: 1.05rem;
+                font-weight: 600;
+                margin: 18px 0 6px;
+            }
+            p {
+                color: var(--muted);
+                margin-bottom: 10px;
+            }
+            table {
+                width: 100%;
+                border-collapse: collapse;
+                margin: 14px 0;
+                font-size: 0.85rem;
+                page-break-inside: avoid;
+            }
+            th,
+            td {
+                text-align: left;
+                padding: 8px 12px;
+                border-bottom: 1px solid var(--line);
+            }
+            th {
+                font-weight: 600;
+                color: var(--primary);
+                background: var(--primary-dim);
+            }
+            code {
+                font-family: "JetBrains Mono", monospace;
+                font-size: 0.8rem;
+                background: var(--primary-dim);
+                padding: 1px 5px;
+                border-radius: 3px;
+            }
+            pre {
+                background: #f8f9fa;
+                border: 1px solid var(--line);
+                border-radius: 6px;
+                padding: 12px;
+                font-family: "JetBrains Mono", monospace;
+                font-size: 0.78rem;
+                line-height: 1.45;
+            }
+            .stat-grid {
+                display: grid;
+                grid-template-columns: 1fr 1fr 1fr 1fr;
+                gap: 10px;
+                margin: 16px 0;
+                page-break-inside: avoid;
+            }
+            .stat {
+                background: #f8f9fa;
+                border: 1px solid var(--line);
+                border-radius: 8px;
+                padding: 14px;
+                text-align: center;
+            }
+            .stat-val {
+                font-family: "DM Serif Display", serif;
+                font-size: 1.6rem;
+                color: var(--primary);
+                line-height: 1;
+            }
+            .stat-label {
+                font-size: 0.72rem;
+                color: var(--muted);
+                margin-top: 3px;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="header">
+            <img src="file://{{TEMPLATE_DIR}}/logo.svg" alt="Logo" />
+            <span>{{TITLE}}</span>
+        </div>
+
+        {{CONTENT}}
+    </body>
+</html>

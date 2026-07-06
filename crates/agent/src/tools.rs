@@ -19,6 +19,7 @@ mod move_path_tool;
 mod open_tool;
 mod read_file_tool;
 mod rename_tool;
+mod replace_lines_tool;
 mod spawn_agent_tool;
 mod symbol_locator;
 mod terminal_tool;
@@ -77,6 +78,7 @@ pub use move_path_tool::*;
 pub use open_tool::*;
 pub use read_file_tool::*;
 pub use rename_tool::*;
+pub use replace_lines_tool::*;
 pub use spawn_agent_tool::*;
 pub use symbol_locator::*;
 pub use terminal_tool::*;
@@ -171,6 +173,7 @@ tools! {
     OpenTool,
     ReadFileTool,
     RenameTool,
+    ReplaceLinesTool,
     SpawnAgentTool,
     TerminalTool,
     UpdatePlanTool,

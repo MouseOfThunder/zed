@@ -4,7 +4,8 @@ use futures::{
     AsyncBufReadExt, AsyncReadExt, FutureExt, StreamExt, io::BufReader, stream::BoxStream,
 };
 use gpui::{
-    AnyView, App, AppContext, AsyncApp, Context, Entity, ParentElement, Styled, Task, Window,
+    AnyView, App, AppContext, AsyncApp, Context, Entity, ParentElement, Styled, Task, TaskExt,
+    Window,
 };
 use http_client::{HttpClient, Request};
 use language_model::{
@@ -17,6 +18,7 @@ use local_mlx::{LocalMlxRequest, ModelInfo, ProcessManager};
 use settings::Settings as _;
 use std::sync::Arc;
 use std::time::Duration;
+use util::ResultExt as _;
 
 use crate::AllLanguageModelSettings;
 
@@ -29,6 +31,7 @@ const PROVIDER_NAME: LanguageModelProviderName = LanguageModelProviderName::new(
 pub struct LocalMlxSettings {
     pub server_binary: String,
     pub server_args: Vec<String>,
+    pub port: u16,
     pub model_directory: Option<std::path::PathBuf>,
     pub idle_timeout_seconds: u64,
     pub available_models: Vec<AvailableModel>,
@@ -47,6 +50,7 @@ pub struct State {
     server_port: Option<u16>,
     server_binary: String,
     server_args: Vec<String>,
+    port: u16,
     idle_timeout_seconds: u64,
     last_error: Option<String>,
     _idle_watcher_task: Option<Task<()>>,
@@ -54,51 +58,47 @@ pub struct State {
 
 impl State {
     fn is_authenticated(&self) -> bool {
-        true
-    }
-
-    fn first_model_from_settings(&self, cx: &App) -> Option<String> {
-        AllLanguageModelSettings::get_global(cx)
-            .local_mlx
-            .available_models
-            .first()
-            .map(|m| m.name.clone())
+        !self.discovered_models.is_empty() || self.process_manager.is_running()
     }
 
     fn authenticate(&mut self, cx: &mut Context<Self>) -> Task<Result<(), AuthenticateError>> {
-        if self.process_manager.is_running() {
+        if self.process_manager.is_running() || self.process_manager.is_starting() {
             return Task::ready(Ok(()));
         }
-
-        let Some(model_name) = self.first_model_from_settings(cx) else {
-            return Task::ready(Err(AuthenticateError::CredentialsNotFound));
-        };
-
-        self.start_server_for_model(model_name, cx)
+        self.start_server(cx)
     }
 
-    fn start_server_for_model(
-        &mut self,
-        model_name: String,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<(), AuthenticateError>> {
+    fn start_server(&mut self, cx: &mut Context<Self>) -> Task<Result<(), AuthenticateError>> {
         let process_manager = self.process_manager.clone();
         let server_binary = self.server_binary.clone();
         let server_args = self.server_args.clone();
         let idle_timeout = Duration::from_secs(self.idle_timeout_seconds);
+        let needs_model = server_args.iter().any(|arg| arg.contains("{model}"));
 
         cx.spawn(async move |this, cx| {
+            if needs_model {
+                // Servers like rapid-mlx require a model argument to start.
+                // We can't start without knowing which model the user wants,
+                // so skip server startup here — it will start on first request
+                // in stream_completion with the selected model.
+                this.update(cx, |this, cx| {
+                    this.fetch_models(cx).detach_and_log_err(cx);
+                    cx.notify();
+                })?;
+                return Ok(());
+            }
+
             let port = process_manager
-                .start(
-                    &server_binary,
-                    &server_args,
-                    &model_name,
-                    cx.background_executor(),
-                )
+                .start(&server_binary, &server_args, None, cx.background_executor())
                 .await
                 .map_err(|err| {
-                    let msg = format!("Failed to start local MLX server: {}", err);
-                    log::warn!("{}", msg);
+                    let msg = format!("{}", err);
+                    log::warn!("Failed to start local MLX server: {}", msg);
+                    this.update(cx, |this, cx| {
+                        this.last_error = Some(msg);
+                        cx.notify();
+                    })
+                    .log_err();
                     AuthenticateError::Other(err)
                 })?;
 
@@ -112,9 +112,35 @@ impl State {
                 this.server_port = Some(port);
                 this.last_error = None;
                 this._idle_watcher_task = idle_watcher;
+                this.fetch_models(cx).detach_and_log_err(cx);
                 cx.notify();
             })?;
 
+            Ok(())
+        })
+    }
+
+    fn fetch_models(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+        let http_client = self.http_client.clone();
+        let port = self.server_port;
+        cx.spawn(async move |this, cx| {
+            let models = if let Some(port) = port {
+                let api_base = format!("http://127.0.0.1:{}", port);
+                local_mlx::model_discovery::discover_models_via_api(http_client.as_ref(), &api_base)
+                    .await
+            } else {
+                cx.background_executor()
+                    .spawn(async move { local_mlx::model_discovery::discover_models_from_cache() })
+                    .await
+            };
+
+            if let Ok(models) = models {
+                this.update(cx, |this, cx| {
+                    this.discovered_models = models;
+                    cx.notify();
+                })
+                .log_err();
+            }
             Ok(())
         })
     }
@@ -122,24 +148,27 @@ impl State {
 
 impl LocalMlxLanguageModelProvider {
     pub fn new(http_client: Arc<dyn HttpClient>, cx: &mut App) -> Arc<Self> {
-        let process_manager = Arc::new(ProcessManager::new());
+        let settings = AllLanguageModelSettings::get_global(cx).local_mlx.clone();
+        let process_manager = Arc::new(ProcessManager::new(settings.port));
 
         Arc::new(Self {
             http_client: http_client.clone(),
             process_manager: process_manager.clone(),
             state: cx.new(|cx| {
-                let settings = AllLanguageModelSettings::get_global(cx).local_mlx.clone();
-                State {
+                let mut state = State {
                     process_manager: process_manager.clone(),
                     http_client: http_client.clone(),
                     discovered_models: Vec::new(),
                     server_port: None,
                     server_binary: settings.server_binary,
                     server_args: settings.server_args,
+                    port: settings.port,
                     idle_timeout_seconds: settings.idle_timeout_seconds,
                     last_error: None,
                     _idle_watcher_task: None,
-                }
+                };
+                state.fetch_models(cx).detach_and_log_err(cx);
+                state
             }),
         })
     }
@@ -177,6 +206,7 @@ impl LanguageModelProvider for LocalMlxLanguageModelProvider {
                 max_tokens: config_model.max_tokens,
                 supports_tools: true,
                 supports_images: false,
+                local_path: None,
             };
 
             models.push(Arc::new(LocalMlxLanguageModel::new(
@@ -185,6 +215,7 @@ impl LanguageModelProvider for LocalMlxLanguageModelProvider {
                 self.process_manager.clone(),
                 self.state.read(cx).server_binary.clone(),
                 self.state.read(cx).server_args.clone(),
+                config_model.max_output_tokens.unwrap_or(8192),
                 config_model.enable_thinking,
                 config_model.repeat_penalty,
                 config_model.top_p,
@@ -204,6 +235,7 @@ impl LanguageModelProvider for LocalMlxLanguageModelProvider {
                     self.process_manager.clone(),
                     self.state.read(cx).server_binary.clone(),
                     self.state.read(cx).server_args.clone(),
+                    8192,
                     None,
                     None,
                     None,
@@ -273,18 +305,13 @@ impl gpui::Render for ConfigurationView {
         let is_running = state.process_manager.is_running();
         let is_starting = state.process_manager.is_starting();
         let port = state.process_manager.port();
-        let current_model = state.process_manager.current_model();
         let binary = state.server_binary.clone();
         let discovered = state.discovered_models.len();
         let last_error = state.last_error.clone();
         drop(state);
 
         let status = if is_running {
-            format!(
-                "Running on port {} (model: {})",
-                port.unwrap_or(0),
-                current_model.as_deref().unwrap_or("unknown")
-            )
+            format!("Running on port {}", port)
         } else if is_starting {
             "Starting...".to_string()
         } else {
@@ -321,6 +348,7 @@ pub struct LocalMlxLanguageModel {
     process_manager: Arc<ProcessManager>,
     server_binary: String,
     server_args: Vec<String>,
+    max_output_tokens: u64,
     enable_thinking: Option<bool>,
     repeat_penalty: Option<f32>,
     top_p: Option<f32>,
@@ -334,6 +362,7 @@ impl LocalMlxLanguageModel {
         process_manager: Arc<ProcessManager>,
         server_binary: String,
         server_args: Vec<String>,
+        max_output_tokens: u64,
         enable_thinking: Option<bool>,
         repeat_penalty: Option<f32>,
         top_p: Option<f32>,
@@ -347,6 +376,7 @@ impl LocalMlxLanguageModel {
             process_manager,
             server_binary,
             server_args,
+            max_output_tokens,
             enable_thinking,
             repeat_penalty,
             top_p,
@@ -398,7 +428,7 @@ impl LanguageModel for LocalMlxLanguageModel {
     }
 
     fn max_output_tokens(&self) -> Option<u64> {
-        None
+        Some(self.max_output_tokens)
     }
 
     fn stream_completion(
@@ -413,7 +443,14 @@ impl LanguageModel for LocalMlxLanguageModel {
         >,
     > {
         let http_client = self.http_client.clone();
-        let model_name = self.model_info.id.clone();
+        let model_name = self
+            .model_info
+            .local_path
+            .as_ref()
+            .and_then(|p| p.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| self.model_info.id.clone());
+        let max_output_tokens = self.max_output_tokens;
         let enable_thinking = self.enable_thinking;
         let repeat_penalty = self.repeat_penalty;
         let top_p = self.top_p;
@@ -425,26 +462,30 @@ impl LanguageModel for LocalMlxLanguageModel {
         let executor = cx.background_executor().clone();
 
         let future = request_limiter.stream(async move {
-            process_manager
-                .ensure_model(&server_binary, &server_args, &model_name, &executor)
-                .await
-                .map_err(|e| {
-                    LanguageModelCompletionError::Other(anyhow!(
-                        "Failed to start local MLX server: {}",
-                        e
-                    ))
-                })?;
+            if !process_manager.is_running() && !process_manager.is_starting() {
+                process_manager
+                    .start(&server_binary, &server_args, Some(&model_name), &executor)
+                    .await
+                    .map_err(|e| {
+                        LanguageModelCompletionError::Other(anyhow!(
+                            "Failed to start local MLX server: {}",
+                            e
+                        ))
+                    })?;
+            } else if process_manager.is_starting() {
+                return Err(LanguageModelCompletionError::Other(anyhow!(
+                    "Local MLX server is still starting up. Please wait a moment."
+                )));
+            }
 
             process_manager.touch();
 
-            let api_url = format!(
-                "http://127.0.0.1:{}/v1",
-                process_manager.port().unwrap_or(0)
-            );
+            let api_url = format!("http://127.0.0.1:{}/v1", process_manager.port());
 
             let local_request = LocalMlxRequest::from_language_model_request(
                 request,
                 &model_name,
+                max_output_tokens,
                 enable_thinking,
                 repeat_penalty,
                 top_p,
@@ -462,10 +503,12 @@ impl LanguageModel for LocalMlxLanguageModel {
                 .body(http_client::AsyncBody::from(body))
                 .map_err(|e| LanguageModelCompletionError::Other(e.into()))?;
 
+            log::info!("Sending request to {} (model: {})", api_url, model_name);
             let response = http_client
                 .send(http_request)
                 .await
                 .map_err(|e| LanguageModelCompletionError::Other(e))?;
+            log::info!("Got response from {}: HTTP {}", api_url, response.status());
 
             let status = response.status();
             if !status.is_success() {
@@ -510,7 +553,17 @@ impl LanguageModel for LocalMlxLanguageModel {
 fn parse_chunk(data: &str) -> Result<LanguageModelCompletionEvent, LanguageModelCompletionError> {
     #[derive(serde::Deserialize)]
     struct Chunk {
+        #[serde(default)]
         choices: Vec<ChoiceDelta>,
+        #[serde(default)]
+        error: Option<ServerError>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct ServerError {
+        message: String,
+        #[serde(rename = "type", default)]
+        error_type: String,
     }
 
     #[derive(serde::Deserialize)]
@@ -545,8 +598,21 @@ fn parse_chunk(data: &str) -> Result<LanguageModelCompletionEvent, LanguageModel
         arguments: Option<String>,
     }
 
-    let chunk: Chunk =
-        serde_json::from_str(data).map_err(|e| LanguageModelCompletionError::Other(e.into()))?;
+    let chunk: Chunk = match serde_json::from_str(data) {
+        Ok(chunk) => chunk,
+        Err(err) => {
+            log::error!("Failed to parse local MLX chunk: {} | data: {}", err, data);
+            return Ok(LanguageModelCompletionEvent::Text(String::new()));
+        }
+    };
+
+    if let Some(server_error) = &chunk.error {
+        return Err(LanguageModelCompletionError::Other(anyhow!(
+            "Local MLX server error: {} (type: {})",
+            server_error.message,
+            server_error.error_type
+        )));
+    }
 
     if let Some(choice) = chunk.choices.first() {
         if let Some(finish_reason) = &choice.finish_reason {

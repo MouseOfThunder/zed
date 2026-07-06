@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# Show tool-call debug output from the Zed log file.
+# Filters for the log lines added to diagnose rapid_mlx / Qwen tool-call hangs.
+#
+# Usage:
+#   script/tool-debug-log           # tail -f mode (live)
+#   script/tool-debug-log --past    # dump matching lines from the current log
+#   script/tool-debug-log --all     # include DEBUG lines (edit_file partial parse)
+#   script/tool-debug-log --launch  # launch Zed Dev with debug logging enabled
+#
+# Log levels of our instrumentation:
+#   WARN  - finish_reason:"stop" with pending tool calls   → visible by default
+#   WARN  - Dropping partial tool-use for non-streaming    → visible by default
+#   INFO  - read_file: path / line numbers                 → visible by default
+#   WARN  - LMStudio/OpenAI tool call JSON parse errors    → visible by default
+#   DEBUG - edit_file: partial input not yet parseable     → needs ZED_LOG=debug
+#           (set via --launch or manually via env var)
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+
+LOG="$HOME/Library/Logs/Zed/Zed.log"
+
+resolve_app() {
+    local candidates=(
+        "/Applications/Zed Dev.app"
+        "$REPO_ROOT/target/aarch64-apple-darwin/release/bundle/osx/Zed Dev.app"
+        "$REPO_ROOT/target/aarch64-apple-darwin/release/dmg/Zed Dev.app"
+        "$REPO_ROOT/target/release/bundle/osx/Zed Dev.app"
+        "$REPO_ROOT/target/release/dmg/Zed Dev.app"
+    )
+
+    local app
+    for app in "${candidates[@]}"; do
+        if [[ -d "$app" ]]; then
+            printf '%s\n' "$app"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+if [[ ! -f "$LOG" ]]; then
+    echo "Log file not found: $LOG" >&2
+    exit 1
+fi
+
+# Patterns that match all log lines we added
+PATTERN='finish_reason|tool call|Dropping partial tool-use|read_file:|edit_file: partial|stream_completion|stream ended|waiting for.*tool|Running tool|Running streaming tool|treating as'
+
+ALL=0
+PAST=0
+LAUNCH=0
+for arg in "$@"; do
+    case "$arg" in
+        --all)    ALL=1 ;;
+        --past)   PAST=1 ;;
+        --launch) LAUNCH=1 ;;
+        *)        echo "Unknown option: $arg" >&2; exit 1 ;;
+    esac
+done
+
+if [[ $LAUNCH -eq 1 ]]; then
+    echo "Launching Zed Dev with ZED_LOG=warn,open_ai=debug,agent=debug,language_models=debug"
+    # open(1) doesn't forward env vars into .app bundles; use the binary directly
+    APP="$(resolve_app)" || {
+        echo "Zed Dev.app not found in /Applications or common build output locations" >&2
+        exit 1
+    }
+    BINARY="$APP/Contents/MacOS/zed"
+    if [[ ! -x "$BINARY" ]]; then
+        echo "Binary not found: $BINARY" >&2
+        exit 1
+    fi
+    ZED_LOG="warn,open_ai=debug,agent=debug,language_models=debug" "$BINARY" &
+    echo "Started (PID $!). Tailing log..."
+    sleep 1
+fi
+
+run_filter() {
+    if [[ $ALL -eq 1 ]]; then
+        grep -E "$PATTERN"
+    else
+        grep -E "$PATTERN" | grep -v 'DEBUG.*edit_file: partial'
+    fi
+}
+
+if [[ $PAST -eq 1 ]]; then
+    echo "=== Matching lines in $LOG ==="
+    run_filter < "$LOG" || echo "(none)"
+else
+    echo "=== Tailing $LOG  (Ctrl-C to stop) ==="
+    echo "    Tip: use --past to dump history, --all to include DEBUG lines"
+    echo "    Tip: use --launch to start Zed Dev with debug logging enabled"
+    echo ""
+    tail -n 0 -F "$LOG" | run_filter
+fi
+

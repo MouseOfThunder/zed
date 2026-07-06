@@ -5,8 +5,9 @@ Run local MLX-accelerated models (Qwen3-Coder, Llama, DeepSeek, etc.) directly f
 ## Prerequisites
 
 1. **macOS with Apple Silicon** (M1/M2/M3/M4)
-2. **`uv`** installed: `curl -LsSf https://astral.sh/uv/install.sh | sh`
-3. **`mlx-llm`** (auto-installed by `uvx` on first run)
+2. **`mlx-lm`** installed: `pip install mlx-lm` (or `pipx install mlx-lm`, `uv tool install mlx-lm`, etc.)
+   - Zed imports your shell PATH at startup, so as long as `mlx_lm.server` is on PATH, it will be found
+   - Falls es nicht gefunden wird, kann der volle Pfad in `server_binary` gesetzt werden
 
 ## Quick Start
 
@@ -43,7 +44,7 @@ Start Zed, open the agent panel, and "Local MLX" appears in the model selector.
 ```
 Zed starts
   → Registers "Local MLX" provider
-  → Spawns: uvx mlx-llm serve --model <first-model> --port <auto>
+  → Spawns: mlx_lm.server --model <first-model> --port <auto> --host 127.0.0.1
   → Health-checks via TCP connect
   → Models appear in selector popup
 
@@ -61,18 +62,40 @@ You type a message
 
 ### `server_binary`
 
-Default: `"uvx"`. Change to full path if `uvx` is not in PATH:
+Default: `"mlx_lm.server"`. Change to use a different backend like [rapid-mlx](https://github.com/raullenchai/Rapid-MLX):
+
 ```json
-"server_binary": "/Users/you/.local/bin/uvx"
+"server_binary": "rapid-mlx"
+```
+
+Or use a full path:
+```json
+"server_binary": "/Users/you/miniforge3/bin/mlx_lm.server"
 ```
 
 ### `server_args`
 
-Default: `["mlx-llm", "serve", "--model", "{model}", "--port", "{port}"]`
+Default: `["--port", "{port}", "--host", "127.0.0.1"]`
 
 Placeholders:
-- `{model}` — replaced with the selected model name
 - `{port}` — replaced with an auto-assigned free port
+- `{model}` — replaced with the selected model name
+
+#### Using rapid-mlx (1.2–1.5× faster than mlx-lm)
+
+Install: `pip install rapid-mlx` or `uv tool install rapid-mlx`
+
+```json
+{
+  "language_models": {
+    "local_mlx": {
+      "server_binary": "rapid-mlx",
+      "server_args": ["serve", "{model}", "--port", "{port}", "--host", "127.0.0.1"],
+      "available_models": [...]
+    }
+  }
+}
+```
 
 ### `idle_timeout_seconds`
 
@@ -121,9 +144,9 @@ Open **Settings → Language Models → Local MLX** to see:
 
 Check Settings → Language Models → Local MLX for errors.
 
-### `uvx: command not found`
+### `mlx_lm.server: command not found`
 
-Install `uv`: https://docs.astral.sh/uv/getting-started/installation/
+Install `mlx-lm`: `pip install mlx-lm`
 
 Or use full path in `server_binary`.
 
@@ -131,10 +154,10 @@ Or use full path in `server_binary`.
 
 Check that the model is downloaded:
 ```sh
-uvx mlx-llm download mlx-community/Qwen3-Coder-Next-6bit
+mlx_lm.manage download mlx-community/Qwen3-Coder-Next-6bit
 ```
 
 ### Port already in use
 
 Zed auto-assigns a free port. If you see port conflicts, stop any other
-`mlx-llm serve` processes: `pkill -f "mlx-llm serve"`
+`mlx_lm.server` processes: `pkill -f "mlx_lm.server"`

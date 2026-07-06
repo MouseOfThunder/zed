@@ -209,6 +209,7 @@ pub struct LmStudioAvailableModel {
 pub struct LocalMlxSettingsContent {
     pub server_binary: Option<String>,
     pub server_args: Option<Vec<String>>,
+    pub port: Option<u16>,
     pub model_directory: Option<PathBuf>,
     pub idle_timeout_seconds: Option<u64>,
     pub available_models: Option<Vec<LocalMlxAvailableModel>>,
@@ -220,6 +221,7 @@ pub struct LocalMlxAvailableModel {
     pub name: String,
     pub display_name: Option<String>,
     pub max_tokens: u64,
+    pub max_output_tokens: Option<u64>,
     pub enable_thinking: Option<bool>,
     pub repeat_penalty: Option<f32>,
     pub top_p: Option<f32>,

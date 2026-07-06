@@ -98,6 +98,7 @@ impl LocalMlxRequest {
     pub fn from_language_model_request(
         request: LanguageModelRequest,
         model_name: &str,
+        max_output_tokens: u64,
         enable_thinking: Option<bool>,
         repeat_penalty: Option<f32>,
         top_p: Option<f32>,
@@ -230,7 +231,7 @@ impl LocalMlxRequest {
             model: model_name.to_string(),
             messages,
             stream: true,
-            max_tokens: None,
+            max_tokens: Some(max_output_tokens),
             stop: request.stop,
             temperature: request.temperature,
             top_p,
