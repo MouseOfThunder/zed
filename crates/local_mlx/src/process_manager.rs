@@ -354,7 +354,7 @@ fn drain_pipe<R: Read + Send + 'static>(reader: R, label: &'static str, tail: Op
                     Ok(0) => break, // EOF: the child closed the pipe.
                     Ok(_) => {
                         let trimmed = line.trim_end();
-                        log::debug!("[rapid-mlx {label}] {trimmed}");
+                        log::info!("[rapid-mlx {label}] {trimmed}");
                         if let Some(tail) = &tail {
                             let mut tail = tail.lock();
                             if tail.len() >= STDERR_TAIL_CAPACITY {

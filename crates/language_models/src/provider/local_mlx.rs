@@ -619,6 +619,12 @@ fn parse_chunk(data: &str) -> Result<LanguageModelCompletionEvent, LanguageModel
     };
 
     if let Some(server_error) = &chunk.error {
+        log::error!(
+            "Local MLX server error chunk - message: {}, type: {}, raw_data: {}",
+            server_error.message,
+            server_error.error_type,
+            data
+        );
         return Err(LanguageModelCompletionError::Other(anyhow!(
             "Local MLX server error: {} (type: {})",
             server_error.message,
