@@ -495,6 +495,15 @@ impl LanguageModel for LocalMlxLanguageModel {
             let body = serde_json::to_string(&local_request)
                 .map_err(|e| LanguageModelCompletionError::Other(e.into()))?;
 
+            log::info!(
+                "Sending request to {} (model: {}, messages: {}, tools: {}, body_size: {} bytes)",
+                api_url,
+                model_name,
+                local_request.messages.len(),
+                local_request.tools.len(),
+                body.len(),
+            );
+
             let http_request = Request::builder()
                 .method(http_client::Method::POST)
                 .uri(format!("{}/chat/completions", api_url))
@@ -502,8 +511,6 @@ impl LanguageModel for LocalMlxLanguageModel {
                 .header("Accept", "text/event-stream")
                 .body(http_client::AsyncBody::from(body))
                 .map_err(|e| LanguageModelCompletionError::Other(e.into()))?;
-
-            log::info!("Sending request to {} (model: {})", api_url, model_name);
             let response = http_client
                 .send(http_request)
                 .await
@@ -512,12 +519,17 @@ impl LanguageModel for LocalMlxLanguageModel {
 
             let status = response.status();
             if !status.is_success() {
-                let mut body = String::new();
-                let _ = response.into_body().read_to_string(&mut body).await;
+                let mut error_body = String::new();
+                let _ = response.into_body().read_to_string(&mut error_body).await;
+                log::error!(
+                    "Local MLX API error: HTTP {} - body: {}",
+                    status,
+                    error_body
+                );
                 return Err(LanguageModelCompletionError::Other(anyhow!(
                     "Local MLX API error: HTTP {} - {}",
                     status,
-                    body
+                    error_body
                 )));
             }
 

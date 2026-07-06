@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use gpui::{BackgroundExecutor, Task};
-use std::io::Read;
+use std::collections::VecDeque;
+use std::io::{BufRead, BufReader, Read};
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::{Child, Command as StdCommand, Stdio};
@@ -9,8 +10,17 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex as ParkingMutex;
 
+/// Number of most-recent stderr lines to retain for startup diagnostics.
+const STDERR_TAIL_CAPACITY: usize = 100;
+
+/// Shared, bounded ring buffer of the most recent stderr lines emitted by the
+/// server process. Filled by the stderr drainer thread and read on the
+/// startup-failure paths so error messages remain informative.
+type StderrTail = Arc<ParkingMutex<VecDeque<String>>>;
+
 pub struct ProcessManager {
     inner: Arc<ParkingMutex<Inner>>,
+    stderr_tail: StderrTail,
 }
 
 struct Inner {
@@ -37,6 +47,9 @@ impl ProcessManager {
                 port,
                 last_used: Instant::now(),
             })),
+            stderr_tail: Arc::new(ParkingMutex::new(VecDeque::with_capacity(
+                STDERR_TAIL_CAPACITY,
+            ))),
         }
     }
 
@@ -103,9 +116,23 @@ impl ProcessManager {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
 
-            let child = cmd
+            let mut child = cmd
                 .spawn()
                 .with_context(|| format!("failed to spawn {} {}", server_binary, args.join(" ")))?;
+
+            // Continuously drain stdout/stderr so the OS pipe buffers never
+            // fill. If left unread, a full pipe (~64KB on macOS) blocks the
+            // child's next write(), which stalls the inference loop and
+            // produces empty response streams on every request after the
+            // first. stderr is also mirrored into a bounded ring buffer so the
+            // startup-failure paths can still surface diagnostics.
+            this.stderr_tail.lock().clear();
+            if let Some(stdout) = child.stdout.take() {
+                drain_pipe(stdout, "stdout", None);
+            }
+            if let Some(stderr) = child.stderr.take() {
+                drain_pipe(stderr, "stderr", Some(this.stderr_tail.clone()));
+            }
 
             {
                 let mut inner = this.inner.lock();
@@ -126,9 +153,10 @@ impl ProcessManager {
                     }
                     if let Some(ref mut child) = inner.child {
                         if child.try_wait()?.is_some() {
-                            let stderr_output = read_stderr(&mut inner);
                             inner.state = ProcessState::Stopped;
                             inner.child = None;
+                            drop(inner);
+                            let stderr_output = read_stderr(&this.stderr_tail);
                             let mut msg =
                                 "Server process exited unexpectedly during startup".to_string();
                             if !stderr_output.is_empty() {
@@ -153,9 +181,10 @@ impl ProcessManager {
                             let mut inner = this.inner.lock();
                             if let Some(ref mut child) = inner.child {
                                 if child.try_wait()?.is_some() {
-                                    let stderr_output = read_stderr(&mut inner);
                                     inner.state = ProcessState::Stopped;
                                     inner.child = None;
+                                    drop(inner);
+                                    let stderr_output = read_stderr(&this.stderr_tail);
                                     let mut msg =
                                         "Server process exited during startup".to_string();
                                     if !stderr_output.is_empty() {
@@ -182,18 +211,18 @@ impl ProcessManager {
                 std::thread::sleep(Duration::from_millis(delay_ms));
             }
 
-            let (stderr_output, child_to_kill) = {
+            let child_to_kill = {
                 let mut inner = this.inner.lock();
                 inner.state = ProcessState::Stopping;
-                let stderr_output = read_stderr(&mut inner);
-                let child_to_kill = inner.child.take();
-                (stderr_output, child_to_kill)
+                inner.child.take()
             };
 
             if let Some(mut child) = child_to_kill {
                 let _ = child.kill();
                 let _ = child.wait();
             }
+
+            let stderr_output = read_stderr(&this.stderr_tail);
 
             {
                 let mut inner = this.inner.lock();
@@ -296,17 +325,48 @@ impl Drop for ProcessManager {
     }
 }
 
-fn read_stderr(inner: &mut Inner) -> String {
-    inner
-        .child
-        .as_mut()
-        .and_then(|c| c.stderr.take())
-        .map(|mut stderr| {
-            let mut buf = String::new();
-            let _ = stderr.read_to_string(&mut buf);
-            buf
-        })
-        .unwrap_or_default()
+/// Returns the most recent stderr output captured from the server process.
+///
+/// stderr is drained continuously by a background thread into `stderr_tail`
+/// (see `drain_pipe`), so this reads from that ring buffer rather than the
+/// child's pipe directly. A short grace period gives the drainer time to flush
+/// any final lines the process wrote just before exiting.
+fn read_stderr(stderr_tail: &StderrTail) -> String {
+    std::thread::sleep(Duration::from_millis(100));
+    let tail = stderr_tail.lock();
+    tail.iter().cloned().collect::<Vec<_>>().join("\n")
+}
+
+/// Spawns a background thread that continuously reads lines from `reader` until
+/// EOF, forwarding each to the log. This prevents the OS pipe buffer from
+/// filling up (which would block the child process on its next write). When a
+/// ring buffer is supplied, each line is also retained (bounded to
+/// `STDERR_TAIL_CAPACITY`) so startup diagnostics remain available.
+fn drain_pipe<R: Read + Send + 'static>(reader: R, label: &'static str, tail: Option<StderrTail>) {
+    let _ = std::thread::Builder::new()
+        .name(format!("mlx-{label}-drainer"))
+        .spawn(move || {
+            let mut buf_reader = BufReader::new(reader);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match buf_reader.read_line(&mut line) {
+                    Ok(0) => break, // EOF: the child closed the pipe.
+                    Ok(_) => {
+                        let trimmed = line.trim_end();
+                        log::debug!("[rapid-mlx {label}] {trimmed}");
+                        if let Some(tail) = &tail {
+                            let mut tail = tail.lock();
+                            if tail.len() >= STDERR_TAIL_CAPACITY {
+                                tail.pop_front();
+                            }
+                            tail.push_back(trimmed.to_string());
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
 }
 
 fn resolve_binary(name: &str) -> String {
