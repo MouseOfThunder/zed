@@ -255,6 +255,53 @@ pub fn authorize_symlink_access(
     event_stream.authorize_always_prompt(title, context, cx)
 }
 
+/// Resolves an absolute path to its canonical form (best-effort) and reports
+/// whether it lies OUTSIDE all of the project's worktrees.
+///
+/// Returns `Some(canonical_path)` when the path is outside every worktree (and
+/// thus should be gated behind explicit user confirmation before a tool creates
+/// anything there). Returns `None` when the path is inside a worktree.
+///
+/// This guards against agents — especially less careful local models — blindly
+/// creating entries at mistyped or unexpected locations outside the project.
+pub async fn absolute_path_outside_project(
+    abs_path: &Path,
+    canonical_worktree_roots: &[PathBuf],
+    fs: &dyn Fs,
+) -> Option<PathBuf> {
+    let canonical = canonicalize_with_ancestors(abs_path, fs)
+        .await
+        .unwrap_or_else(|| abs_path.to_path_buf());
+    if is_within_any_worktree(&canonical, canonical_worktree_roots) {
+        None
+    } else {
+        Some(canonical)
+    }
+}
+
+/// Prompts the user for permission to operate at a path that lies outside the
+/// project. Like symlink-escape authorization, this is an additional gate that
+/// always requires explicit approval, even when the tool is configured to
+/// auto-allow.
+pub fn authorize_outside_project_access(
+    tool_name: &str,
+    display_path: &str,
+    canonical_target: &Path,
+    event_stream: &ToolCallEventStream,
+    cx: &mut App,
+) -> Task<Result<()>> {
+    let title = format!(
+        "`{}` is outside the project (creates `{}`)",
+        display_path,
+        canonical_target.display(),
+    );
+
+    let context =
+        ToolPermissionContext::new(tool_name, vec![canonical_target.display().to_string()]);
+
+    event_stream.authorize_always_prompt(title, context, cx)
+}
+
 pub fn authorize_with_sensitive_settings(
     kind: Option<SensitiveSettingsKind>,
     context: ToolPermissionContext,

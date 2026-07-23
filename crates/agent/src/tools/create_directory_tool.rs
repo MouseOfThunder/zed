@@ -1,6 +1,6 @@
 use super::tool_permissions::{
-    authorize_symlink_access, canonicalize_worktree_roots, detect_symlink_escape,
-    sensitive_settings_kind,
+    absolute_path_outside_project, authorize_outside_project_access, authorize_symlink_access,
+    canonicalize_worktree_roots, detect_symlink_escape, sensitive_settings_kind,
 };
 use agent_client_protocol::schema as acp;
 use agent_settings::AgentSettings;
@@ -95,8 +95,24 @@ impl AgentTool for CreateDirectoryTool {
                 detect_symlink_escape(project, &input.path, &canonical_roots, cx)
                     .map(|(_, target)| target)
             });
-
             let sensitive_kind = sensitive_settings_kind(Path::new(&input.path), fs.as_ref()).await;
+
+            // Resolve the path against the project. `Some` means it lies inside a
+            // worktree; `None` means it does not resolve to a project location.
+            let project_path = project
+                .read_with(cx, |project, cx| project.find_project_path(&input.path, cx));
+
+            // For an absolute path that falls outside every worktree, remember the
+            // canonical target. Creating directories outside the project is gated
+            // behind explicit user confirmation (below) so that agents — especially
+            // local models prone to path typos — cannot blindly create entries at
+            // unexpected locations.
+            let outside_target = if project_path.is_none() && Path::new(&input.path).is_absolute() {
+                absolute_path_outside_project(Path::new(&input.path), &canonical_roots, fs.as_ref())
+                    .await
+            } else {
+                None
+            };
 
             let decision =
                 if matches!(decision, ToolPermissionDecision::Allow) && sensitive_kind.is_some() {
@@ -115,6 +131,20 @@ impl AgentTool for CreateDirectoryTool {
                         Self::NAME,
                         &input.path,
                         &canonical_target,
+                        &event_stream,
+                        cx,
+                    )
+                }))
+            } else if let Some(canonical_target) = outside_target.as_ref() {
+                // Outside-the-project authorization is an additional gate (like a
+                // symlink escape): it always requires explicit user approval, even
+                // if the tool is otherwise configured to auto-allow. This prevents
+                // agents from blindly creating directories at mistyped locations.
+                Some(cx.update(|cx| {
+                    authorize_outside_project_access(
+                        Self::NAME,
+                        &input.path,
+                        canonical_target,
                         &event_stream,
                         cx,
                     )
@@ -142,20 +172,40 @@ impl AgentTool for CreateDirectoryTool {
                 authorize.await.map_err(|e| e.to_string())?;
             }
 
-            let create_entry = project.update(cx, |project, cx| {
-                match project.find_project_path(&input.path, cx) {
-                    Some(project_path) => Ok(project.create_entry(project_path, true, cx)),
-                    None => Err("Path to create was outside the project".to_string()),
+            if let Some(project_path) = project_path {
+                // Inside the project: create through the worktree so its state
+                // stays consistent.
+                let create_entry = project.update(cx, |project, cx| {
+                    project.create_entry(project_path, true, cx)
+                });
+                futures::select! {
+                    result = create_entry.fuse() => {
+                        result.map_err(|e| format!("Creating directory {destination_path}: {e}"))?;
+                    }
+                    _ = event_stream.cancelled_by_user().fuse() => {
+                        return Err("Create directory cancelled by user".to_string());
+                    }
                 }
-            })?;
-
-            futures::select! {
-                result = create_entry.fuse() => {
-                    result.map_err(|e| format!("Creating directory {destination_path}: {e}"))?;
+            } else if let Some(outside) = outside_target {
+                // Outside the project, explicitly confirmed by the user above:
+                // create directly on the filesystem (recursively).
+                let fs = fs.clone();
+                let create_outside = Box::pin(async move { fs.create_dir(&outside).await });
+                futures::select! {
+                    result = create_outside.fuse() => {
+                        result.map_err(|e| format!("Creating directory {destination_path}: {e}"))?;
+                    }
+                    _ = event_stream.cancelled_by_user().fuse() => {
+                        return Err("Create directory cancelled by user".to_string());
+                    }
                 }
-                _ = event_stream.cancelled_by_user().fuse() => {
-                    return Err("Create directory cancelled by user".to_string());
-                }
+            } else {
+                // The path neither resolves to a project location nor is an
+                // absolute path we can place. Refuse rather than guess.
+                return Err(format!(
+                    "Path {} could not be resolved to a project location. Use an absolute path, or prefix it with a project root name.",
+                    MarkdownInlineCode(&input.path)
+                ));
             }
 
             Ok(format!("Created directory {destination_path}"))
@@ -440,6 +490,119 @@ mod tests {
                 Ok(Ok(crate::ThreadEvent::ToolCallAuthorization(_)))
             ),
             "Deny policy should not emit symlink authorization prompt",
+        );
+    }
+
+    #[gpui::test]
+    async fn test_create_directory_outside_project_requests_authorization(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                "project": {
+                    "src": { "main.rs": "fn main() {}" }
+                },
+                "outside": {}
+            }),
+        )
+        .await;
+
+        let project = Project::test(fs.clone(), [path!("/root/project").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        let tool = Arc::new(CreateDirectoryTool::new(project));
+
+        // An absolute path that is not inside any worktree.
+        let outside_path = path!("/root/outside/newdir").to_string();
+        let (event_stream, mut event_rx) = ToolCallEventStream::test();
+        let task = cx.update(|cx| {
+            tool.run(
+                ToolInput::resolved(CreateDirectoryToolInput {
+                    path: outside_path.clone(),
+                }),
+                event_stream,
+                cx,
+            )
+        });
+
+        // Creating a directory outside the project must always prompt for
+        // confirmation, even though the default permission mode is Allow.
+        let auth = event_rx.expect_authorization().await;
+        let title = auth.tool_call.fields.title.as_deref().unwrap_or("");
+        assert!(
+            title.contains("outside the project"),
+            "Authorization title should mention outside the project, got: {title}",
+        );
+
+        auth.response
+            .send(acp_thread::SelectedPermissionOutcome::new(
+                acp::PermissionOptionId::new("allow"),
+                acp::PermissionOptionKind::AllowOnce,
+            ))
+            .unwrap();
+
+        let result = task.await;
+        assert!(
+            result.is_ok(),
+            "Tool should succeed after authorization: {result:?}"
+        );
+
+        // The directory was actually created on the filesystem.
+        assert!(
+            fs.is_dir(path!("/root/outside/newdir").as_ref()).await,
+            "Directory should exist outside the project after confirmation",
+        );
+    }
+
+    #[gpui::test]
+    async fn test_create_directory_outside_project_denied(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                "project": {
+                    "src": { "main.rs": "fn main() {}" }
+                },
+                "outside": {}
+            }),
+        )
+        .await;
+
+        let project = Project::test(fs.clone(), [path!("/root/project").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        let tool = Arc::new(CreateDirectoryTool::new(project));
+
+        let outside_path = path!("/root/outside/newdir").to_string();
+        let (event_stream, mut event_rx) = ToolCallEventStream::test();
+        let task = cx.update(|cx| {
+            tool.run(
+                ToolInput::resolved(CreateDirectoryToolInput {
+                    path: outside_path,
+                }),
+                event_stream,
+                cx,
+            )
+        });
+
+        // Deny the outside-project confirmation by dropping the authorization.
+        let auth = event_rx.expect_authorization().await;
+        drop(auth);
+
+        let result = task.await;
+        assert!(
+            result.is_err(),
+            "Tool should fail when outside-project authorization is denied",
+        );
+
+        // The directory was not created.
+        assert!(
+            !fs.is_dir(path!("/root/outside/newdir").as_ref()).await,
+            "Directory should not exist when confirmation is denied",
         );
     }
 }

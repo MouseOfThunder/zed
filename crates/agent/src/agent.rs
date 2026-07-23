@@ -1306,16 +1306,32 @@ impl NativeAgentConnection {
                                     )
                                 })??;
                                 cx.background_spawn(async move {
-                                    if let acp_thread::RequestPermissionOutcome::Selected(outcome) =
-                                        outcome_task.await
-                                    {
-                                        response
-                                            .send(outcome)
-                                            .map_err(|_| {
-                                                anyhow!("authorization receiver was dropped")
-                                            })
-                                            .log_err();
-                                    }
+                                    let outcome = match outcome_task.await {
+                                        acp_thread::RequestPermissionOutcome::Selected(outcome) => {
+                                            outcome
+                                        }
+                                        // The permission request was cancelled (e.g. the tool call
+                                        // was superseded, or the thread was torn down) before the
+                                        // user responded. Send an explicit "deny" outcome so the
+                                        // waiting tool resolves with a clear, user-facing error
+                                        // ("Permission to run tool denied by user") instead of the
+                                        // sender being dropped. Dropping it surfaces as the cryptic
+                                        // "authorization channel closed" error and can leave the
+                                        // tool call UI stuck in "Waiting for confirmation", which
+                                        // looks like an unresponsive hang with no error message.
+                                        acp_thread::RequestPermissionOutcome::Cancelled => {
+                                            acp_thread::SelectedPermissionOutcome::new(
+                                                acp::PermissionOptionId::new("deny"),
+                                                acp::PermissionOptionKind::RejectOnce,
+                                            )
+                                        }
+                                    };
+                                    response
+                                        .send(outcome)
+                                        .map_err(|_| {
+                                            anyhow!("authorization receiver was dropped")
+                                        })
+                                        .log_err();
                                 })
                                 .detach();
                             }
@@ -2226,6 +2242,95 @@ mod internal_tests {
     use serde_json::json;
     use settings::SettingsStore;
     use util::{path, rel_path::rel_path};
+
+    /// Regression test for the "authorization channel closed" hang.
+    ///
+    /// When a tool-call permission request is cancelled (the internal `respond_tx`
+    /// stored in `WaitingForConfirmation` is dropped before the user answers),
+    /// `request_tool_call_authorization` resolves to `Cancelled`. Previously,
+    /// `handle_thread_events` only handled `Selected` and dropped the `response`
+    /// sender in the `Cancelled` case, which surfaced as the cryptic
+    /// "authorization channel closed" error and left the tool call stuck in
+    /// "Waiting for confirmation". The fix maps `Cancelled` to an explicit "deny"
+    /// outcome so the waiting tool resolves with a clear, user-facing error.
+    #[gpui::test]
+    async fn test_cancelled_tool_authorization_sends_deny(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree("/", json!({ "a": {} })).await;
+        let project = Project::test(fs.clone(), [], cx).await;
+        let thread_store = cx.new(|cx| ThreadStore::new(cx));
+        let connection = NativeAgentConnection(cx.update(|cx| {
+            NativeAgent::new(thread_store, Templates::new(), None, fs.clone(), cx)
+        }));
+
+        // Create an AcpThread through the connection, like a real session.
+        let acp_thread = cx
+            .update(|cx| {
+                Rc::new(connection.clone()).new_session(
+                    project.clone(),
+                    PathList::new(&[Path::new("/")]),
+                    cx,
+                )
+            })
+            .await
+            .unwrap();
+        cx.run_until_parked();
+
+        // Synthetic permission request, capturing the channel that the (native)
+        // thread waits on for the decision.
+        let (response_tx, response_rx) = oneshot::channel();
+        let tool_call_id = "test_tool_call".to_string();
+        // A real tool call always carries a title; `upsert_tool_call_inner` needs
+        // one to create the entry (empty `ToolCallUpdateFields` fails with
+        // "title is required for a tool call").
+        let mut auth_fields = acp::ToolCallUpdateFields::new();
+        auth_fields.title = Some("Test Tool".into());
+        let auth_event = ThreadEvent::ToolCallAuthorization(ToolCallAuthorization {
+            tool_call: acp::ToolCallUpdate::new(tool_call_id.clone(), auth_fields),
+            options: acp_thread::PermissionOptions::Flat(Vec::new()),
+            response: response_tx,
+            context: None,
+            kind: acp_thread::AuthorizationKind::PermissionGrant,
+        });
+
+        // Drive the event through the real handle_thread_events path (the fix site).
+        let (events_tx, events_rx) = mpsc::unbounded();
+        events_tx.unbounded_send(Ok(auth_event)).unwrap();
+        let _events_tx = events_tx;
+        let _handle_task = cx.update(|cx| {
+            NativeAgentConnection::handle_thread_events(events_rx, acp_thread.downgrade(), cx)
+        });
+        cx.run_until_parked();
+
+        // Cancel the pending permission request: replacing the tool call's status
+        // drops the internal respond_tx, resolving the request to Cancelled.
+        acp_thread
+            .update(cx, |thread, cx| {
+                thread.upsert_tool_call_inner(
+                    acp::ToolCallUpdate::new(
+                        tool_call_id.clone(),
+                        acp::ToolCallUpdateFields::new(),
+                    ),
+                    acp_thread::ToolCallStatus::Failed,
+                    cx,
+                )
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        // With the fix, Cancelled is mapped to an explicit "deny" and sent back,
+        // rather than the sender being dropped (which would close the channel and
+        // reproduce the "authorization channel closed" hang).
+        let outcome = response_rx.await.expect(
+            "response channel must receive a deny outcome, not be closed (authorization channel closed)",
+        );
+        assert_eq!(outcome.option_id.0.as_ref(), "deny");
+        assert!(matches!(
+            outcome.option_kind,
+            acp::PermissionOptionKind::RejectOnce
+        ));
+    }
 
     #[gpui::test]
     async fn test_maintaining_project_context(cx: &mut TestAppContext) {
